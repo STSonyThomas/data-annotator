@@ -147,6 +147,25 @@ ipcMain.handle('list-project-files', async (event, projectPath) => {
   return filesByStage;
 });
 
+// Helper function to generate unique filename if duplicate exists
+async function generateUniqueFilename(destDir, originalFileName) {
+  const extname = path.extname(originalFileName);
+  const basename = path.basename(originalFileName, extname);
+  let destPath = path.join(destDir, originalFileName);
+  let counter = 1;
+  
+  // Check if file already exists
+  while (fs.existsSync(destPath)) {
+    // Generate unique ID (timestamp + counter)
+    const uniqueId = `${Date.now()}_${counter}`;
+    const newFileName = `${basename}_${uniqueId}${extname}`;
+    destPath = path.join(destDir, newFileName);
+    counter++;
+  }
+  
+  return path.basename(destPath);
+}
+
 ipcMain.handle('upload-images', async (event, projectPath) => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile', 'multiSelections'],
@@ -154,15 +173,30 @@ ipcMain.handle('upload-images', async (event, projectPath) => {
     title: 'Select Images to Upload',
   });
 
-  if (canceled || !filePaths) return false;
+  if (canceled || !filePaths) return { success: false };
 
   const destDir = path.join(projectPath, 'unlabeled');
+  const renamedFiles = [];
+
   for (const filePath of filePaths) {
-    const fileName = path.basename(filePath);
-    const destPath = path.join(destDir, fileName);
+    const originalFileName = path.basename(filePath);
+    const uniqueFileName = await generateUniqueFilename(destDir, originalFileName);
+    const destPath = path.join(destDir, uniqueFileName);
+    
+    if (originalFileName !== uniqueFileName) {
+      renamedFiles.push({
+        original: originalFileName,
+        renamed: uniqueFileName
+      });
+    }
+    
     await fsp.copyFile(filePath, destPath);
   }
-  return true;
+  
+  return { 
+    success: true, 
+    renamedFiles: renamedFiles.length > 0 ? renamedFiles : null 
+  };
 });
 
 ipcMain.handle('move-images', async (event, projectPath, filesToMove, fromStage, toStage) => {
@@ -170,27 +204,68 @@ ipcMain.handle('move-images', async (event, projectPath, filesToMove, fromStage,
   const toDir = path.join(projectPath, toStage);
 
   for (const fileName of filesToMove) {
+    // Generate unique filename for destination if needed
+    const uniqueFileName = await generateUniqueFilename(toDir, fileName);
+    const sourceImagePath = path.join(fromDir, fileName);
+    const destImagePath = path.join(toDir, uniqueFileName);
+    
     // Move image
     try {
-      await fsp.rename(path.join(fromDir, fileName), path.join(toDir, fileName));
+      await fsp.rename(sourceImagePath, destImagePath);
     } catch (error) {
       console.error(`Failed to move ${fileName} from ${fromStage} to ${toStage}:`, error);
+      continue; // Skip this file and continue with others
     }
 
     // Move corresponding label file, if it exists
-    const labelName = path.basename(fileName, path.extname(fileName)) + '.txt';
-    const sourceLabelPath = path.join(fromDir, labelName);
-    const destLabelPath = path.join(toDir, labelName);
+    const originalBaseName = path.basename(fileName, path.extname(fileName));
+    const newBaseName = path.basename(uniqueFileName, path.extname(uniqueFileName));
+    const sourceLabelName = originalBaseName + '.txt';
+    const destLabelName = newBaseName + '.txt';
+    
+    const sourceLabelPath = path.join(fromDir, sourceLabelName);
+    const destLabelPath = path.join(toDir, destLabelName);
+    
     try {
-      await fsp.rename(sourceLabelPath, destLabelPath);
-    } catch (error) {
-      // Ignore error if the source label file doesn't exist
-      if (error.code !== 'ENOENT') {
-        console.error(`Failed to move label for ${fileName}:`, error);
+      // Check if source label file exists before trying to move it
+      if (fs.existsSync(sourceLabelPath)) {
+        await fsp.rename(sourceLabelPath, destLabelPath);
       }
+    } catch (error) {
+      console.error(`Failed to move label for ${fileName}:`, error);
     }
   }
   return true;
+});
+
+// Handler to delete all images in the dataset folder
+ipcMain.handle('delete-dataset-images', async (event, projectPath) => {
+  const datasetDir = path.join(projectPath, 'dataset');
+  
+  try {
+    // Check if dataset directory exists
+    if (!fs.existsSync(datasetDir)) {
+      return false;
+    }
+
+    // Read all files in the dataset directory
+    const files = await fsp.readdir(datasetDir);
+    
+    // Delete all files
+    for (const file of files) {
+      const filePath = path.join(datasetDir, file);
+      try {
+        await fsp.unlink(filePath);
+      } catch (error) {
+        console.error(`Failed to delete file ${file}:`, error);
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error deleting dataset images:', error);
+    return false;
+  }
 });
 
 // --- Annotation Window Handlers ---
@@ -228,6 +303,11 @@ ipcMain.handle('get-image-data', async (event, imageName) => {
   const imagePath = path.join(projectPathCache, 'annotation', imageName);
   const data = await fsp.readFile(imagePath, 'base64');
   return data;
+});
+
+// Get current project path (used by annotation window)
+ipcMain.handle('get-project-path', async () => {
+  return projectPathCache;
 });
 
 ipcMain.handle('save-yolo-labels', async (event, imageName, labels) => {
@@ -466,18 +546,24 @@ ipcMain.handle('create-dataset', async (event, projectPath, datasetConfig) => {
       const splitLabelsDir = path.join(datasetDir, splitName, 'labels');
       
       for (const imageName of images) {
-        // Copy image
+        // Copy image with unique name if needed
+        const uniqueImageName = await generateUniqueFilename(splitImagesDir, imageName);
         const sourceImagePath = path.join(datasetImagesDir, imageName);
-        const destImagePath = path.join(splitImagesDir, imageName);
+        const destImagePath = path.join(splitImagesDir, uniqueImageName);
         await fsp.copyFile(sourceImagePath, destImagePath);
         
         // Copy corresponding label file if it exists
-        const labelName = path.basename(imageName, path.extname(imageName)) + '.txt';
-        const sourceLabelPath = path.join(datasetImagesDir, labelName);
-        const destLabelPath = path.join(splitLabelsDir, labelName);
+        const originalBaseName = path.basename(imageName, path.extname(imageName));
+        const newBaseName = path.basename(uniqueImageName, path.extname(uniqueImageName));
+        const sourceLabelName = originalBaseName + '.txt';
+        const destLabelName = newBaseName + '.txt';
+        const sourceLabelPath = path.join(datasetImagesDir, sourceLabelName);
+        const destLabelPath = path.join(splitLabelsDir, destLabelName);
         
         try {
-          await fsp.copyFile(sourceLabelPath, destLabelPath);
+          if (fs.existsSync(sourceLabelPath)) {
+            await fsp.copyFile(sourceLabelPath, destLabelPath);
+          }
         } catch (error) {
           console.log(`⚠️ [Backend] No label file for ${imageName}`);
         }
@@ -545,6 +631,186 @@ ipcMain.handle('delete-dataset', async (event, projectPath, datasetName) => {
     return false;
   }
 });
+
+// --- Model Management Handlers ---
+
+// Get models
+ipcMain.handle('get-models', async (event, projectPath) => {
+  try {
+    const modelsPath = path.join(projectPath, 'models.json');
+    
+    if (!fs.existsSync(modelsPath)) {
+      return [];
+    }
+    
+    const modelsData = await fsp.readFile(modelsPath, 'utf8');
+    return JSON.parse(modelsData);
+  } catch (error) {
+    console.error('Error getting models:', error);
+    return [];
+  }
+});
+
+// Create model
+ipcMain.handle('create-model', async (event, projectPath, modelConfig) => {
+  try {
+    const modelsPath = path.join(projectPath, 'models.json');
+    let models = [];
+    
+    if (fs.existsSync(modelsPath)) {
+      const modelsData = await fsp.readFile(modelsPath, 'utf8');
+      models = JSON.parse(modelsData);
+    }
+    
+    // Generate unique ID for the model if not provided
+    const modelId = modelConfig.id || Date.now().toString();
+    
+    // Convert frontend model structure to backend structure
+    const newModel = {
+      id: modelId,
+      name: modelConfig.name,
+      version: modelConfig.version || 'v1.0',
+      endpoint: modelConfig.endpoint,
+      headers: {},
+      confidence: 0.5,
+      description: modelConfig.description || '',
+      createdAt: modelConfig.createdAt || new Date().toISOString()
+    };
+    
+    // Add authentication headers if authToken is provided
+    if (modelConfig.authToken && modelConfig.authToken.trim()) {
+      newModel.headers['Authorization'] = `Bearer ${modelConfig.authToken.trim()}`;
+    }
+    
+    models.push(newModel);
+    
+    await fsp.writeFile(modelsPath, JSON.stringify(models, null, 2));
+    console.log(`Model ${modelConfig.name} created successfully`);
+    
+    return { success: true, model: newModel };
+  } catch (error) {
+    console.error('Error creating model:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Delete model
+ipcMain.handle('delete-model', async (event, projectPath, modelId) => {
+  try {
+    const modelsPath = path.join(projectPath, 'models.json');
+    
+    if (!fs.existsSync(modelsPath)) {
+      return { success: false, error: 'Models file not found' };
+    }
+    
+    const modelsData = await fsp.readFile(modelsPath, 'utf8');
+    let models = JSON.parse(modelsData);
+    
+    const initialLength = models.length;
+    models = models.filter(model => model.id !== modelId);
+    
+    if (models.length === initialLength) {
+      return { success: false, error: 'Model not found' };
+    }
+    
+    await fsp.writeFile(modelsPath, JSON.stringify(models, null, 2));
+    console.log(`Model ${modelId} deleted successfully`);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting model:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Predict with model
+ipcMain.handle('predict-with-model', async (event, projectPath, modelId, imageData) => {
+  try {
+    const modelsPath = path.join(projectPath, 'models.json');
+    
+    if (!fs.existsSync(modelsPath)) {
+      return { success: false, error: 'Models file not found' };
+    }
+    
+    const modelsData = await fsp.readFile(modelsPath, 'utf8');
+    const models = JSON.parse(modelsData);
+    
+    const model = models.find(m => m.id === modelId);
+    if (!model) {
+      return { success: false, error: 'Model not found' };
+    }
+    
+    // Import fetch dynamically for HTTP requests
+    const { default: fetch } = await import('node-fetch');
+    const FormData = (await import('form-data')).default;
+    
+    // Create FormData for the image upload
+    const formData = new FormData();
+    
+    // Handle different image data formats
+    let imageBuffer;
+    if (imageData instanceof Buffer) {
+      imageBuffer = imageData;
+    } else if (typeof imageData === 'string' && imageData.startsWith('data:')) {
+      // Handle base64 data URL
+      const base64Data = imageData.split(',')[1];
+      imageBuffer = Buffer.from(base64Data, 'base64');
+    } else {
+      // Handle Blob/ArrayBuffer from frontend
+      imageBuffer = Buffer.from(imageData);
+    }
+    
+    // Append image as file upload (matching FastAPI's UploadFile expectation)
+    formData.append('file', imageBuffer, {
+      filename: 'image.jpg',
+      contentType: 'image/jpeg'
+    });
+    
+    // Add any additional parameters from the model config
+    if (model.confidence) {
+      formData.append('confidence', model.confidence.toString());
+    }
+    
+    // Prepare headers
+    const headers = {
+      ...formData.getHeaders()
+    };
+    
+    // Add authentication headers if available
+    if (model.headers && Object.keys(model.headers).length > 0) {
+      Object.assign(headers, model.headers);
+    }
+    
+    console.log(`Making prediction request to: ${model.endpoint}`);
+    
+    // Make the API request
+    const response = await fetch(model.endpoint, {
+      method: 'POST',
+      body: formData,
+      headers: headers
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+    }
+    
+    const result = await response.json();
+    
+    // Your FastAPI server returns: { predictions: [...] }
+    // Extract the predictions array
+    const predictions = result.predictions || result;
+    
+    console.log(`Received ${predictions.length} predictions from model`);
+    
+    return { success: true, predictions: predictions };
+  } catch (error) {
+    console.error('Error making prediction:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// --- Window Management Handlers ---
 
 ipcMain.on('window-minimize', () => {
     BrowserWindow.getFocusedWindow()?.minimize();

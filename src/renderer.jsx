@@ -89,6 +89,9 @@ const ProjectView = ({ project }) => {
   const [activeTab, setActiveTab] = useState('overview');
   const [datasets, setDatasets] = useState([]);
   const [showDatasetModal, setShowDatasetModal] = useState(false);
+  const [models, setModels] = useState([]);
+  const [showModelModal, setShowModelModal] = useState(false);
+  const [editingModel, setEditingModel] = useState(null);
 
   const fetchFiles = async () => {
     if (!project || !project.path) return;
@@ -110,21 +113,44 @@ const ProjectView = ({ project }) => {
     }
   };
 
+  const fetchModels = async () => {
+    if (!project || !project.path) return;
+    try {
+      const modelList = await window.electronAPI.getModels(project.path);
+      setModels(modelList || []);
+    } catch (error) {
+      console.error('Error fetching models:', error);
+      setModels([]);
+    }
+  };
+
   useEffect(() => {
     fetchFiles();
     fetchDatasets();
+    fetchModels();
     // Add a listener to refresh the file list when the main window regains focus
     const handleFocus = () => {
       fetchFiles();
       fetchDatasets();
+      fetchModels();
     };
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
   }, [project]);
 
   const handleUpload = async () => {
-    const success = await window.electronAPI.uploadImages(project.path);
-    if (success) fetchFiles();
+    const result = await window.electronAPI.uploadImages(project.path);
+    if (result && result.success) {
+      fetchFiles();
+      
+      // Show notification if any files were renamed due to duplicates
+      if (result.renamedFiles) {
+        const renamedCount = result.renamedFiles.length;
+        const message = `${renamedCount} file${renamedCount > 1 ? 's were' : ' was'} renamed to avoid duplicates:\n` +
+          result.renamedFiles.map(f => `• ${f.original} → ${f.renamed}`).join('\n');
+        alert(`Files uploaded successfully!\n\n${message}`);
+      }
+    }
   };
 
   const handleMove = async (fromStage, toStage) => {
@@ -165,6 +191,33 @@ const ProjectView = ({ project }) => {
     }
   };
 
+  const handleDeleteAllDatasetImages = async () => {
+    const datasetImages = files.dataset?.images || [];
+    if (datasetImages.length === 0) {
+      alert('No images in dataset to delete.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Are you sure you want to delete all ${datasetImages.length} image(s) from the dataset? This will permanently delete the files and cannot be undone.`
+    );
+
+    if (confirmed) {
+      try {
+        const success = await window.electronAPI.deleteDatasetImages(project.path);
+        if (success) {
+          fetchFiles();
+          alert('All dataset images have been deleted successfully.');
+        } else {
+          alert('Failed to delete dataset images. Please try again.');
+        }
+      } catch (error) {
+        console.error('Error deleting dataset images:', error);
+        alert('An error occurred while deleting dataset images.');
+      }
+    }
+  };
+
   const handleCreateDataset = async (datasetConfig) => {
     try {
       const success = await window.electronAPI.createDataset(project.path, datasetConfig);
@@ -188,6 +241,43 @@ const ProjectView = ({ project }) => {
       } catch (error) {
         console.error('Error deleting dataset:', error);
         alert('Failed to delete dataset. Please try again.');
+      }
+    }
+  };
+
+  const handleCreateModel = async (modelConfig) => {
+    try {
+      const result = await window.electronAPI.createModel(project.path, modelConfig);
+      if (result.success) {
+        fetchModels();
+        setShowModelModal(false);
+        setEditingModel(null);
+      } else {
+        alert('Failed to create model: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Error creating model:', error);
+      alert('Failed to create model. Please try again.');
+    }
+  };
+
+  const handleEditModel = (model) => {
+    setEditingModel(model);
+    setShowModelModal(true);
+  };
+
+  const handleDeleteModel = async (modelId) => {
+    if (window.confirm(`Are you sure you want to delete this model? This action cannot be undone.`)) {
+      try {
+        const result = await window.electronAPI.deleteModel(project.path, modelId);
+        if (result.success) {
+          fetchModels();
+        } else {
+          alert('Failed to delete model: ' + result.error);
+        }
+      } catch (error) {
+        console.error('Error deleting model:', error);
+        alert('Failed to delete model. Please try again.');
       }
     }
   };
@@ -372,7 +462,194 @@ const ProjectView = ({ project }) => {
     );
   };
 
-  const StageColumn = ({ stage, title, onMoveLeft, onMoveRight, onMoveAll, onLabel, onMoveAnnotated, onCreateDataset }) => {
+  // Model Modal Component
+  const ModelModal = ({ isOpen, onClose, onSubmit, editingModel }) => {
+    const [modelName, setModelName] = useState('');
+    const [modelVersion, setModelVersion] = useState('');
+    const [endpoint, setEndpoint] = useState('');
+    const [authToken, setAuthToken] = useState('');
+
+    useEffect(() => {
+      if (editingModel) {
+        setModelName(editingModel.name || '');
+        setModelVersion(editingModel.version || '');
+        setEndpoint(editingModel.endpoint || '');
+        setAuthToken(editingModel.authToken || '');
+      } else {
+        setModelName('');
+        setModelVersion('');
+        setEndpoint('');
+        setAuthToken('');
+      }
+    }, [editingModel]);
+
+    const handleSubmit = (e) => {
+      e.preventDefault();
+      if (!modelName.trim()) {
+        alert('Please enter a model name');
+        return;
+      }
+      if (!endpoint.trim()) {
+        alert('Please enter an endpoint URL');
+        return;
+      }
+      
+      // Basic URL validation
+      try {
+        new URL(endpoint);
+      } catch (e) {
+        alert('Please enter a valid URL');
+        return;
+      }
+
+      onSubmit({
+        id: editingModel ? editingModel.id : Date.now().toString(),
+        name: modelName.trim(),
+        version: modelVersion.trim() || 'v1.0',
+        endpoint: endpoint.trim(),
+        authToken: authToken.trim(),
+        createdAt: editingModel ? editingModel.createdAt : new Date().toISOString()
+      });
+    };
+
+    if (!isOpen) return null;
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0,0,0,0.7)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 10000
+      }}>
+        <div style={{
+          backgroundColor: '#2c2c2c',
+          padding: '30px',
+          borderRadius: '10px',
+          border: '1px solid #555',
+          minWidth: '500px',
+          color: 'white'
+        }}>
+          <h2 style={{ margin: '0 0 20px 0', color: 'white' }}>
+            {editingModel ? 'Edit Model' : 'Add Model'}
+          </h2>
+          <form onSubmit={handleSubmit}>
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', color: '#ccc' }}>Model Name:</label>
+              <input
+                type="text"
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '8px',
+                  backgroundColor: '#404040',
+                  border: '1px solid #555',
+                  borderRadius: '4px',
+                  color: 'white'
+                }}
+                placeholder="e.g., YOLOv8 Object Detection"
+              />
+            </div>
+
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', color: '#ccc' }}>Version:</label>
+              <input
+                type="text"
+                value={modelVersion}
+                onChange={(e) => setModelVersion(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '8px',
+                  backgroundColor: '#404040',
+                  border: '1px solid #555',
+                  borderRadius: '4px',
+                  color: 'white'
+                }}
+                placeholder="e.g., v1.0, v2.1"
+              />
+            </div>
+
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', color: '#ccc' }}>Endpoint URL:</label>
+              <input
+                type="text"
+                value={endpoint}
+                onChange={(e) => setEndpoint(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '8px',
+                  backgroundColor: '#404040',
+                  border: '1px solid #555',
+                  borderRadius: '4px',
+                  color: 'white'
+                }}
+                placeholder="https://api.example.com/predict"
+              />
+            </div>
+
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', color: '#ccc' }}>Auth Token (Optional):</label>
+              <input
+                type="password"
+                value={authToken}
+                onChange={(e) => setAuthToken(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '8px',
+                  backgroundColor: '#404040',
+                  border: '1px solid #555',
+                  borderRadius: '4px',
+                  color: 'white'
+                }}
+                placeholder="Bearer token or API key"
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  setEditingModel(null);
+                }}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#555',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#3498db',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                {editingModel ? 'Update Model' : 'Add Model'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
+  const StageColumn = ({ stage, title, onMoveLeft, onMoveRight, onMoveAll, onLabel, onMoveAnnotated, onCreateDataset, onDeleteAll }) => {
     const images = files[stage]?.images || [];
     const displayedImages = images.slice(0, 4);
     const remainingCount = Math.max(0, images.length - 4);
@@ -433,10 +710,28 @@ const ProjectView = ({ project }) => {
                 border: 'none',
                 borderRadius: '4px',
                 cursor: images.length === 0 ? 'not-allowed' : 'pointer',
-                fontSize: '12px'
+                fontSize: '12px',
+                marginRight: '8px'
               }}
             >
               📦 Create Dataset
+            </button>
+          )}
+          {onDeleteAll && (
+            <button 
+              onClick={onDeleteAll} 
+              disabled={images.length === 0}
+              style={{
+                padding: '8px 12px',
+                backgroundColor: images.length === 0 ? '#555' : '#e74c3c',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: images.length === 0 ? 'not-allowed' : 'pointer',
+                fontSize: '12px'
+              }}
+            >
+              🗑️ Delete All
             </button>
           )}
         </div>
@@ -626,6 +921,22 @@ const ProjectView = ({ project }) => {
             >
               📦 Datasets ({datasets.length})
             </button>
+            <button
+              onClick={() => setActiveTab('models')}
+              style={{
+                width: '100%',
+                padding: '15px 20px',
+                backgroundColor: activeTab === 'models' ? '#3498db' : 'transparent',
+                color: 'white',
+                border: 'none',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: '14px',
+                borderBottom: '1px solid #555'
+              }}
+            >
+              🤖 Models ({models.length})
+            </button>
           </div>
         </div>
 
@@ -678,10 +989,11 @@ const ProjectView = ({ project }) => {
                   title="Dataset"
                   onMoveLeft={() => handleMove('dataset', 'annotation')}
                   onCreateDataset={() => setShowDatasetModal(true)}
+                  onDeleteAll={handleDeleteAllDatasetImages}
                 />
               </div>
             </>
-          ) : (
+          ) : activeTab === 'datasets' ? (
             /* Datasets Tab */
             <div style={{ flex: 1, padding: '20px' }}>
               <div style={{ marginBottom: '20px' }}>
@@ -750,6 +1062,115 @@ const ProjectView = ({ project }) => {
                 </div>
               )}
             </div>
+          ) : activeTab === 'models' ? (
+            /* Models Tab */
+            <div style={{ flex: 1, padding: '20px' }}>
+              <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ color: 'white', margin: '0 0 10px 0', fontSize: '1.5rem' }}>AI Models</h2>
+                  <p style={{ color: '#ccc', margin: '0', fontSize: '0.9rem' }}>
+                    Manage model endpoints for automatic annotation
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowModelModal(true)}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#3498db',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.3)'
+                  }}
+                >
+                  🤖 Add Model
+                </button>
+              </div>
+              
+              {models.length === 0 ? (
+                <div style={{ 
+                  textAlign: 'center', 
+                  padding: '40px', 
+                  color: '#666',
+                  backgroundColor: '#2c2c2c',
+                  borderRadius: '8px',
+                  border: '2px dashed #555'
+                }}>
+                  <p style={{ fontSize: '1.1rem', marginBottom: '10px' }}>No models configured yet</p>
+                  <p style={{ fontSize: '0.9rem' }}>Add model endpoints to enable automatic annotation</p>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: '15px' }}>
+                  {models.map((model, index) => (
+                    <div 
+                      key={model.id || index}
+                      style={{
+                        backgroundColor: '#2c2c2c',
+                        border: '1px solid #555',
+                        borderRadius: '8px',
+                        padding: '20px',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <h3 style={{ margin: '0 0 8px 0', color: 'white', fontSize: '1.2rem' }}>
+                          {model.name}
+                          <span style={{ fontSize: '0.8rem', color: '#999', marginLeft: '10px' }}>
+                            {model.version}
+                          </span>
+                        </h3>
+                        <p style={{ margin: '0 0 5px 0', color: '#ccc', fontSize: '0.85rem', wordBreak: 'break-all' }}>
+                          {model.endpoint}
+                        </p>
+                        <div style={{ display: 'flex', gap: '15px', fontSize: '0.8rem', color: '#999' }}>
+                          <span>Auth: {model.authToken ? 'Yes' : 'No'}</span>
+                          <span>Added: {new Date(model.createdAt).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button
+                          onClick={() => handleEditModel(model)}
+                          style={{
+                            padding: '8px 15px',
+                            backgroundColor: '#f39c12',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '12px'
+                          }}
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button
+                          onClick={() => handleDeleteModel(model.id)}
+                          style={{
+                            padding: '8px 15px',
+                            backgroundColor: '#e74c3c',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '12px'
+                          }}
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Default fallback */
+            <div style={{ flex: 1, padding: '20px' }}>
+              <p style={{ color: '#ccc' }}>Select a tab to view content</p>
+            </div>
           )}
         </div>
       </div>
@@ -760,6 +1181,14 @@ const ProjectView = ({ project }) => {
         onClose={() => setShowDatasetModal(false)}
         onSubmit={handleCreateDataset}
         totalImages={files.dataset?.images?.length || 0}
+      />
+
+      {/* Model Modal */}
+      <ModelModal 
+        isOpen={showModelModal}
+        onClose={() => setShowModelModal(false)}
+        onSubmit={handleCreateModel}
+        editingModel={editingModel}
       />
     </div>
   );

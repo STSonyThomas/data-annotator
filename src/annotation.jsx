@@ -21,9 +21,136 @@ const AnnotationEditor = () => {
     const [selectedBoxIndex, setSelectedBoxIndex] = useState(null);
     const [hoveredBoxIndex, setHoveredBoxIndex] = useState(null);
     
+    // New state for resize functionality
+    const [isResizing, setIsResizing] = useState(false);
+    const [resizeHandle, setResizeHandle] = useState(null); // 'nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'
+    const [resizeStartPoint, setResizeStartPoint] = useState({ x: 0, y: 0 });
+    const [resizeStartBox, setResizeStartBox] = useState(null);
+    
+    // Model prediction state
+    const [models, setModels] = useState([]);
+    const [selectedModelId, setSelectedModelId] = useState('');
+    const [isLoadingPrediction, setIsLoadingPrediction] = useState(false);
+    
     const imageRef = useRef(null);
     const canvasRef = useRef(null);
     const classColors = ['#FF5733', '#33FF57', '#3357FF', '#FF33A1', '#A133FF', '#33FFA1', '#FFC300', '#C70039'];
+
+    // Function to draw resize handles around a box
+    const drawResizeHandles = useCallback((box) => {
+        if (!canvasRef.current) return;
+        
+        const ctx = canvasRef.current.getContext('2d');
+        const handleSize = 8;
+        const handles = [
+            { name: 'nw', x: box.x - handleSize/2, y: box.y - handleSize/2 },
+            { name: 'ne', x: box.x + box.width - handleSize/2, y: box.y - handleSize/2 },
+            { name: 'sw', x: box.x - handleSize/2, y: box.y + box.height - handleSize/2 },
+            { name: 'se', x: box.x + box.width - handleSize/2, y: box.y + box.height - handleSize/2 },
+            { name: 'n', x: box.x + box.width/2 - handleSize/2, y: box.y - handleSize/2 },
+            { name: 's', x: box.x + box.width/2 - handleSize/2, y: box.y + box.height - handleSize/2 },
+            { name: 'w', x: box.x - handleSize/2, y: box.y + box.height/2 - handleSize/2 },
+            { name: 'e', x: box.x + box.width - handleSize/2, y: box.y + box.height/2 - handleSize/2 }
+        ];
+        
+        handles.forEach(handle => {
+            // Draw handle background
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = '#333333';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([]);
+            ctx.fillRect(handle.x, handle.y, handleSize, handleSize);
+            ctx.strokeRect(handle.x, handle.y, handleSize, handleSize);
+        });
+    }, []);
+
+    // Function to check if a point is within a resize handle
+    const getResizeHandle = useCallback((box, point) => {
+        const handleSize = 8;
+        const tolerance = 4; // Extra tolerance for easier clicking
+        const handles = [
+            { name: 'nw', x: box.x - handleSize/2, y: box.y - handleSize/2 },
+            { name: 'ne', x: box.x + box.width - handleSize/2, y: box.y - handleSize/2 },
+            { name: 'sw', x: box.x - handleSize/2, y: box.y + box.height - handleSize/2 },
+            { name: 'se', x: box.x + box.width - handleSize/2, y: box.y + box.height - handleSize/2 },
+            { name: 'n', x: box.x + box.width/2 - handleSize/2, y: box.y - handleSize/2 },
+            { name: 's', x: box.x + box.width/2 - handleSize/2, y: box.y + box.height - handleSize/2 },
+            { name: 'w', x: box.x - handleSize/2, y: box.y + box.height/2 - handleSize/2 },
+            { name: 'e', x: box.x + box.width - handleSize/2, y: box.y + box.height/2 - handleSize/2 }
+        ];
+        
+        for (const handle of handles) {
+            if (point.x >= handle.x - tolerance && 
+                point.x <= handle.x + handleSize + tolerance &&
+                point.y >= handle.y - tolerance && 
+                point.y <= handle.y + handleSize + tolerance) {
+                return handle.name;
+            }
+        }
+        return null;
+    }, []);
+
+    // Function to resize box based on handle and mouse position
+    const resizeBox = useCallback((originalBox, handle, startPoint, currentPoint) => {
+        const deltaX = currentPoint.x - startPoint.x;
+        const deltaY = currentPoint.y - startPoint.y;
+        
+        let newBox = { ...originalBox };
+        
+        switch (handle) {
+            case 'nw': // Top-left
+                newBox.x = originalBox.x + deltaX;
+                newBox.y = originalBox.y + deltaY;
+                newBox.width = originalBox.width - deltaX;
+                newBox.height = originalBox.height - deltaY;
+                break;
+            case 'ne': // Top-right
+                newBox.y = originalBox.y + deltaY;
+                newBox.width = originalBox.width + deltaX;
+                newBox.height = originalBox.height - deltaY;
+                break;
+            case 'sw': // Bottom-left
+                newBox.x = originalBox.x + deltaX;
+                newBox.width = originalBox.width - deltaX;
+                newBox.height = originalBox.height + deltaY;
+                break;
+            case 'se': // Bottom-right
+                newBox.width = originalBox.width + deltaX;
+                newBox.height = originalBox.height + deltaY;
+                break;
+            case 'n': // Top
+                newBox.y = originalBox.y + deltaY;
+                newBox.height = originalBox.height - deltaY;
+                break;
+            case 's': // Bottom
+                newBox.height = originalBox.height + deltaY;
+                break;
+            case 'w': // Left
+                newBox.x = originalBox.x + deltaX;
+                newBox.width = originalBox.width - deltaX;
+                break;
+            case 'e': // Right
+                newBox.width = originalBox.width + deltaX;
+                break;
+        }
+        
+        // Ensure minimum size
+        const minSize = 10;
+        if (newBox.width < minSize) {
+            if (handle.includes('w')) {
+                newBox.x = originalBox.x + originalBox.width - minSize;
+            }
+            newBox.width = minSize;
+        }
+        if (newBox.height < minSize) {
+            if (handle.includes('n')) {
+                newBox.y = originalBox.y + originalBox.height - minSize;
+            }
+            newBox.height = minSize;
+        }
+        
+        return newBox;
+    }, []);
 
     // --- Drawing Logic ---
     const drawCanvas = useCallback(() => {
@@ -122,6 +249,11 @@ const AnnotationEditor = () => {
             const isHovered = hoveredBoxIndex === index;
             console.log(`📦 [drawCanvas] Drawing existing box ${index}:`, box, { isSelected, isHovered });
             drawAnnotationMask(box, color, false, isSelected, isHovered);
+            
+            // Draw resize handles for selected box
+            if (isSelected) {
+                drawResizeHandles(box);
+            }
         });
 
         // Draw current drawing mask (if drawing)
@@ -135,7 +267,7 @@ const AnnotationEditor = () => {
         // Reset global alpha
         ctx.globalAlpha = 1.0;
         console.log('✨ [drawCanvas] Completed drawing');
-    }, [boxes, classes, drawing, currentBox, selectedClass, classColors, showFilled, selectedBoxIndex, hoveredBoxIndex]);
+    }, [boxes, classes, drawing, currentBox, selectedClass, classColors, showFilled, selectedBoxIndex, hoveredBoxIndex, drawResizeHandles]);
 
     useEffect(() => {
         console.log('🔄 [useEffect-drawCanvas] Triggered by state change:', {
@@ -144,10 +276,11 @@ const AnnotationEditor = () => {
             hasCurrentBox: !!currentBox,
             showFilled: showFilled,
             selectedBoxIndex: selectedBoxIndex,
-            hoveredBoxIndex: hoveredBoxIndex
+            hoveredBoxIndex: hoveredBoxIndex,
+            isResizing: isResizing
         });
         drawCanvas();
-    }, [boxes, drawing, currentBox, showFilled, selectedBoxIndex, hoveredBoxIndex, drawCanvas]);
+    }, [boxes, drawing, currentBox, showFilled, selectedBoxIndex, hoveredBoxIndex, isResizing, drawCanvas]);
 
     // Additional effect to ensure canvas redraws when image data changes
     useEffect(() => {
@@ -302,6 +435,20 @@ const AnnotationEditor = () => {
         const pos = getMousePos(e);
         
         if (tool === 'select') {
+            // Check if clicking on a resize handle first
+            if (selectedBoxIndex !== null) {
+                const selectedBox = boxes[selectedBoxIndex];
+                const handle = getResizeHandle(selectedBox, pos);
+                if (handle) {
+                    console.log('🎯 [handleMouseDown] Clicked resize handle:', handle);
+                    setIsResizing(true);
+                    setResizeHandle(handle);
+                    setResizeStartPoint(pos);
+                    setResizeStartBox({ ...selectedBox });
+                    return;
+                }
+            }
+            
             // Selection mode: check if clicking on an existing box
             const clickedBoxIndex = findBoxAtPoint(pos);
             console.log('🎯 [handleMouseDown] Select mode - clicked box index:', clickedBoxIndex);
@@ -331,11 +478,45 @@ const AnnotationEditor = () => {
     const handleMouseMove = (e) => {
         const pos = getMousePos(e);
         
+        // Handle resizing
+        if (isResizing && resizeHandle && resizeStartBox && selectedBoxIndex !== null) {
+            const newBox = resizeBox(resizeStartBox, resizeHandle, resizeStartPoint, pos);
+            const updatedBoxes = [...boxes];
+            updatedBoxes[selectedBoxIndex] = newBox;
+            setBoxes(updatedBoxes);
+            drawCanvas();
+            return;
+        }
+        
         // Handle hovering for selection mode
-        if (tool === 'select' && !drawing) {
+        if (tool === 'select' && !drawing && !isResizing) {
             const hoveredIndex = findBoxAtPoint(pos);
             if (hoveredIndex !== hoveredBoxIndex) {
                 setHoveredBoxIndex(hoveredIndex);
+            }
+            
+            // Update cursor based on resize handle
+            if (selectedBoxIndex !== null) {
+                const selectedBox = boxes[selectedBoxIndex];
+                const handle = getResizeHandle(selectedBox, pos);
+                if (handle) {
+                    // Set appropriate cursor for resize handle
+                    const cursors = {
+                        'nw': 'nw-resize',
+                        'ne': 'ne-resize',
+                        'sw': 'sw-resize',
+                        'se': 'se-resize',
+                        'n': 'n-resize',
+                        's': 's-resize',
+                        'w': 'w-resize',
+                        'e': 'e-resize'
+                    };
+                    canvasRef.current.style.cursor = cursors[handle] || 'pointer';
+                } else {
+                    canvasRef.current.style.cursor = hoveredIndex !== null ? 'pointer' : 'default';
+                }
+            } else {
+                canvasRef.current.style.cursor = hoveredIndex !== null ? 'pointer' : 'default';
             }
         }
         
@@ -360,6 +541,25 @@ const AnnotationEditor = () => {
 
     const handleMouseUp = () => {
         console.log('🖱️ [handleMouseUp] Mouse up event');
+        
+        // Handle end of resize operation
+        if (isResizing) {
+            console.log('🔄 [handleMouseUp] Finishing resize operation');
+            setIsResizing(false);
+            setResizeHandle(null);
+            setResizeStartPoint({ x: 0, y: 0 });
+            setResizeStartBox(null);
+            
+            // Save the updated labels
+            saveLabels(boxes);
+            
+            // Reset cursor
+            if (canvasRef.current) {
+                canvasRef.current.style.cursor = 'default';
+            }
+            return;
+        }
+        
         if (!drawing || !currentBox) {
             console.log('❌ [handleMouseUp] Not drawing or no current box');
             return;
@@ -388,6 +588,21 @@ const AnnotationEditor = () => {
 
     const handleMouseLeave = () => {
         setHoveredBoxIndex(null);
+        
+        // Reset cursor
+        if (canvasRef.current) {
+            canvasRef.current.style.cursor = 'default';
+        }
+        
+        // End resize operation if in progress
+        if (isResizing) {
+            setIsResizing(false);
+            setResizeHandle(null);
+            setResizeStartPoint({ x: 0, y: 0 });
+            setResizeStartBox(null);
+            saveLabels(boxes);
+        }
+        
         handleMouseUp(); // Also handle mouse up if drawing
     };
 
@@ -425,6 +640,114 @@ const AnnotationEditor = () => {
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [handleKeyDown]);
+
+    // Load models on component mount
+    useEffect(() => {
+        const loadModels = async () => {
+            try {
+                const projectPath = await window.electronAPI.getProjectPath();
+                const loadedModels = await window.electronAPI.getModels(projectPath);
+                setModels(loadedModels);
+                if (loadedModels.length > 0) {
+                    setSelectedModelId(loadedModels[0].id);
+                }
+            } catch (error) {
+                console.error('Error loading models:', error);
+            }
+        };
+        
+        loadModels();
+    }, []);
+
+    // --- Model Prediction Handlers ---
+    
+    const handlePredictWithModel = async () => {
+        if (!selectedModelId || !imageData) {
+            alert('Please select a model and ensure an image is loaded');
+            return;
+        }
+        
+        setIsLoadingPrediction(true);
+        try {
+            const projectPath = await window.electronAPI.getProjectPath();
+            
+            // Get the current image path
+            const currentImageName = imageInfo[currentIndex]?.name;
+            if (!currentImageName) {
+                throw new Error('No image selected');
+            }
+            
+            // Get image data as base64
+            const imageBase64 = await window.electronAPI.getImageData(currentImageName);
+            if (!imageBase64) {
+                throw new Error('Failed to load image data');
+            }
+            
+            // Send base64 data to backend (it will handle conversion to proper format)
+            const result = await window.electronAPI.predictWithModel(projectPath, selectedModelId, `data:image/jpeg;base64,${imageBase64}`);
+            
+            if (result.success) {
+                // Process predictions and convert to our box format
+                const predictedBoxes = processPredictions(result.predictions);
+                
+                // Add predicted boxes to current boxes
+                const newBoxes = [...boxes, ...predictedBoxes];
+                setBoxes(newBoxes);
+                saveLabels(newBoxes);
+                
+                console.log(`Added ${predictedBoxes.length} predicted annotations`);
+                alert(`Successfully added ${predictedBoxes.length} AI predictions!`);
+            } else {
+                console.error('Prediction failed:', result.error);
+                alert(`Prediction failed: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Error making prediction:', error);
+            alert(`Error making prediction: ${error.message}`);
+        } finally {
+            setIsLoadingPrediction(false);
+        }
+    };
+    
+    const processPredictions = (predictions) => {
+        // Convert predictions from your FastAPI server format to our box format
+        if (!predictions || !Array.isArray(predictions)) {
+            console.warn('Invalid predictions format:', predictions);
+            return [];
+        }
+        
+        return predictions.map(pred => {
+            // Your server returns: { class_id, class_name, confidence, bbox: {x1, y1, x2, y2} }
+            const { class_id, class_name, confidence, bbox } = pred;
+            
+            if (!bbox || typeof bbox.x1 === 'undefined') {
+                console.warn('Invalid bbox format:', pred);
+                return null;
+            }
+            
+            // Get image dimensions for coordinate validation
+            const imgWidth = imageRef.current?.naturalWidth || 1;
+            const imgHeight = imageRef.current?.naturalHeight || 1;
+            
+            // Convert from corner coordinates to our format (top-left + width/height)
+            const x = Math.max(0, Math.min(bbox.x1, imgWidth));
+            const y = Math.max(0, Math.min(bbox.y1, imgHeight));
+            const width = Math.max(1, Math.min(bbox.x2 - bbox.x1, imgWidth - x));
+            const height = Math.max(1, Math.min(bbox.y2 - bbox.y1, imgHeight - y));
+            
+            // Use class name if available, otherwise use class ID, or default
+            const className = class_name || (classes[class_id]) || `class_${class_id}` || 'predicted';
+            
+            return {
+                x,
+                y,
+                width,
+                height,
+                class: className,
+                confidence: confidence || 0
+            };
+        }).filter(box => box !== null && box.width > 5 && box.height > 5); // Filter out invalid or very small boxes
+    };
 
     // --- UI Handlers ---
 
@@ -646,7 +969,59 @@ const AnnotationEditor = () => {
                     >
                         🎯 Select Tool
                     </button>
+                    
+                    {/* AI Prediction Tool */}
+                    {models.length > 0 && (
+                        <button 
+                            onClick={handlePredictWithModel}
+                            disabled={isLoadingPrediction || !imageData}
+                            style={{
+                                padding: '10px',
+                                backgroundColor: isLoadingPrediction ? '#666' : '#9b59b6',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '5px',
+                                cursor: isLoadingPrediction ? 'not-allowed' : 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '8px'
+                            }}
+                            title={selectedModelId ? models.find(m => m.id === selectedModelId)?.name : 'No model selected'}
+                        >
+                            🤖 {isLoadingPrediction ? 'Predicting...' : 'AI Predict'}
+                        </button>
+                    )}
                 </div>
+
+                {/* Model Selection for AI Prediction */}
+                {models.length > 0 && (
+                    <div style={{ padding: '10px', backgroundColor: '#444', borderRadius: '5px' }}>
+                        <label style={{ display: 'block', marginBottom: '5px', fontSize: '12px', color: '#ccc' }}>
+                            AI Model:
+                        </label>
+                        <select 
+                            value={selectedModelId} 
+                            onChange={(e) => setSelectedModelId(e.target.value)}
+                            style={{ 
+                                width: '100%', 
+                                padding: '5px', 
+                                backgroundColor: '#555',
+                                color: 'white',
+                                border: '1px solid #666',
+                                borderRadius: '3px',
+                                fontSize: '12px'
+                            }}
+                        >
+                            <option value="">Select a model...</option>
+                            {models.map(model => (
+                                <option key={model.id} value={model.id}>
+                                    {model.name}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
 
                 {/* Current Tool Info */}
                 <div style={{ padding: '10px', backgroundColor: '#444', borderRadius: '5px', fontSize: '14px' }}>
@@ -707,7 +1082,8 @@ const AnnotationEditor = () => {
                     </div>
                 ) : tool === 'select' ? (
                     <div style={{ padding: '10px', backgroundColor: '#444', borderRadius: '5px', fontSize: '14px', color: '#999' }}>
-                        Click on a bounding box to select it
+                        <div style={{ marginBottom: '8px' }}>Click on a bounding box to select it</div>
+                        <div style={{ fontSize: '12px', color: '#aaa' }}>💡 Drag the white squares to resize selected boxes</div>
                     </div>
                 ) : null}
 
@@ -719,6 +1095,9 @@ const AnnotationEditor = () => {
                     <div>R : Copy previous labels</div>
                     <div>Del : Delete selected box</div>
                     <div>Esc : Clear selection</div>
+                    <div style={{ marginTop: '8px', color: '#aaa', fontStyle: 'italic' }}>
+                        💡 In Select mode: drag corners/edges to resize
+                    </div>
                 </div>
 
                 {/* Box List */}
