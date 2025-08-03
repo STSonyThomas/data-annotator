@@ -1,0 +1,27 @@
+{
+  "name": "labeller",
+  "version": "1.0.0",
+  "description": "Dataset Annotation Application",
+  "license": "ISC",
+  "author": "Sony Thomas",
+  "type": "commonjs",
+  "main": "main.js",
+  "scripts": {
+    "start": "concurrently \"npm run dev\" \"npm run electron\"",
+    "dev": "vite",
+    "electron": "electron .",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "electron": "^37.2.5",
+    "image-size": "^2.0.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.0",
+    "vite": "^7.0.6",
+    "wait-on": "^8.0.4"
+  }
+}
