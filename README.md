@@ -23,6 +23,11 @@ A comprehensive desktop application for image annotation and dataset management,
 - **Dual-Mode Interface**: Switch between Draw and Select modes
   - **Draw Mode**: Create new bounding boxes with class assignment
   - **Select Mode**: Click and edit existing bounding boxes
+- **AI-Powered Predictions**: Integrate with AI model endpoints for automatic annotation
+  - Configure multiple AI models through the Models tab
+  - Send images to AI servers and receive bounding box predictions
+  - FastAPI-compatible server integration with standardized input/output format
+  - Manual refinement of AI-generated annotations
 - **Individual Box Editing**: 
   - Select any bounding box for modification
   - Change class labels on individual boxes
@@ -107,6 +112,103 @@ Data Labeler/
    - Train/Validation/Test split percentages
    - Total image count verification
 4. Generate YOLO-formatted dataset with proper folder structure
+
+## 🤖 AI Labelling Integration
+
+Data Labeler supports automated annotation through AI model integration. You can configure AI model endpoints to automatically generate bounding box predictions for your images.
+
+### Model Configuration
+
+1. Navigate to the **"Models"** tab in the sidebar
+2. Click **"Add Model"** to configure a new AI endpoint
+3. Provide the following information:
+   - **Model Name**: Descriptive name for your model (e.g., "YOLOv8 Object Detection")
+   - **Version**: Model version identifier (e.g., "v1.0")
+   - **Endpoint URL**: Full URL to your AI model's prediction endpoint
+   - **Auth Token**: Optional authentication token for secured endpoints
+
+### AI Model Server Requirements
+
+Your AI model server must implement a FastAPI-compatible endpoint that accepts image uploads and returns predictions.
+
+#### Required Input Format
+
+The application sends POST requests to your model endpoint with:
+
+- **Content-Type**: `multipart/form-data`
+- **Field Name**: `file`
+- **File Format**: Standard image file (JPG, PNG, etc.) as `UploadFile`
+
+**Example FastAPI endpoint:**
+```python
+from fastapi import FastAPI, UploadFile, File
+from typing import List
+
+app = FastAPI()
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    # Process the uploaded image
+    # Return predictions in the required format
+    pass
+```
+
+#### Required Output Format
+
+Your model server must return JSON in the following format:
+
+```json
+{
+  "predictions": [
+    {
+      "class_id": 0,
+      "class_name": "person",
+      "confidence": 0.85,
+      "bbox": [100, 50, 200, 150]
+    },
+    {
+      "class_id": 1,
+      "class_name": "car",
+      "confidence": 0.92,
+      "bbox": [300, 100, 450, 200]
+    }
+  ]
+}
+```
+
+**Field Descriptions:**
+- **`class_id`** (integer): Numeric class identifier (0-based indexing)
+- **`class_name`** (string): Human-readable class name
+- **`confidence`** (float): Prediction confidence score (0.0 to 1.0)
+- **`bbox`** (array): Bounding box coordinates as `[x1, y1, x2, y2]`
+  - `x1, y1`: Top-left corner coordinates
+  - `x2, y2`: Bottom-right corner coordinates
+  - Coordinates should be in absolute pixel values
+
+### Using AI Predictions
+
+1. **Open Annotation Window**: Navigate to the annotation interface
+2. **Select AI Model**: Choose from your configured models in the AI Prediction tool
+3. **Generate Predictions**: Click "Predict" to send the current image to your AI model
+4. **Review Results**: AI-generated bounding boxes appear on the canvas
+5. **Edit and Refine**: Manually adjust predictions as needed
+6. **Save Annotations**: Finalize annotations in YOLO format
+
+### Supported Model Types
+
+- **Object Detection**: YOLO, R-CNN, SSD models
+- **Instance Segmentation**: Models that can provide bounding box approximations
+- **Custom Models**: Any model that follows the input/output format requirements
+
+### Error Handling
+
+The application provides comprehensive error handling for AI predictions:
+- Network connectivity issues
+- Model server timeouts
+- Invalid response formats
+- Authentication failures
+
+Failed predictions will display error messages without interrupting the annotation workflow.
 
 ## 📊 Dataset Output Format
 
