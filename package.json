@@ -27,12 +27,14 @@
   }
 },
   "scripts": {
-  "dev": "vite",
-  "start": "electron .",
-  "build:renderer": "vite build",
-  "pack": "npm run build:renderer && electron-builder --dir",
-  "dist": "npm run build:renderer && electron-builder"
-},
+    "dev": "concurrently \"npm run start:renderer\" \"npm run start:electron\"",
+    "start": "npm run build:renderer && electron .",
+    "start:renderer": "vite",
+    "start:electron": "wait-on http://localhost:5173 && electron .",
+    "build:renderer": "vite build",
+    "pack": "npm run build:renderer && electron-builder --dir",
+    "dist": "npm run build:renderer && electron-builder"
+  },
   "dependencies": {
     "form-data": "^4.0.4",
     "image-size": "^2.0.2",
