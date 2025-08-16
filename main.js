@@ -26,7 +26,6 @@ function createMainWindow() {
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
   }
@@ -49,7 +48,6 @@ function createAnnotationWindow() {
 
   if (isDev) {
     annotationWindow.loadURL('http://localhost:5173/annotation.html');
-    annotationWindow.webContents.openDevTools();
   } else {
     annotationWindow.loadFile(path.join(__dirname, 'dist', 'annotation.html'));
   }
