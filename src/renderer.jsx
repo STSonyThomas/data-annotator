@@ -218,6 +218,33 @@ const ProjectView = ({ project }) => {
     }
   };
 
+  const handleDeleteAllUnlabeledImages = async () => {
+    const unlabeledImages = files.unlabeled?.images || [];
+    if (unlabeledImages.length === 0) {
+      alert('No images in unlabeled to delete.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Are you sure you want to delete all ${unlabeledImages.length} image(s) from unlabeled? This will permanently delete the files and cannot be undone.`
+    );
+
+    if (confirmed) {
+      try {
+        const success = await window.electronAPI.deleteUnlabeledImages(project.path);
+        if (success) {
+          fetchFiles();
+          alert('All unlabeled images have been deleted successfully.');
+        } else {
+          alert('Failed to delete unlabeled images. Please try again.');
+        }
+      } catch (error) {
+        console.error('Error deleting unlabeled images:', error);
+        alert('An error occurred while deleting unlabeled images.');
+      }
+    }
+  };
+
   const handleCreateDataset = async (datasetConfig) => {
     try {
       const success = await window.electronAPI.createDataset(project.path, datasetConfig);
@@ -805,7 +832,7 @@ const ProjectView = ({ project }) => {
                 fontSize: '12px'
               }}
             >
-              ← Move Selected
+              ← Move All
             </button>
           )}
           {onMoveAll && (
@@ -975,11 +1002,12 @@ const ProjectView = ({ project }) => {
                   title="Unlabeled"
                   onMoveRight={() => handleMove('unlabeled', 'annotation')}
                   onMoveAll={() => handleMoveAll('unlabeled', 'annotation')}
+                  onDeleteAll={handleDeleteAllUnlabeledImages}
                 />
                 <StageColumn
                   stage="annotation"
                   title="To Annotate"
-                  onMoveLeft={() => handleMove('annotation', 'unlabeled')}
+                  onMoveLeft={() => handleMoveAll('annotation', 'unlabeled')}
                   onMoveRight={() => handleMove('annotation', 'dataset')}
                   onLabel={handleLabel}
                   onMoveAnnotated={handleMoveAnnotated}

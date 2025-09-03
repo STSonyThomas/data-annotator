@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uploadImages: (projectPath) => ipcRenderer.invoke('upload-images', projectPath),
   moveImages: (projectPath, files, fromStage, toStage) => ipcRenderer.invoke('move-images', projectPath, files, fromStage, toStage),
   deleteDatasetImages: (projectPath) => ipcRenderer.invoke('delete-dataset-images', projectPath),
+  deleteUnlabeledImages: (projectPath) => ipcRenderer.invoke('delete-unlabeled-images', projectPath),
   openAnnotationWindow: (projectPath) => ipcRenderer.invoke('open-annotation-window', projectPath),
   closeAnnotationWindow: () => ipcRenderer.invoke('close-annotation-window'),
 

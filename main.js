@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, dialog, nativeImage } = require('electron')
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs').promises;
+const crypto = require('crypto');
 
 // --- App Setup and Window Management ---
 
@@ -149,19 +150,12 @@ ipcMain.handle('list-project-files', async (event, projectPath) => {
 async function generateUniqueFilename(destDir, originalFileName) {
   const extname = path.extname(originalFileName);
   const basename = path.basename(originalFileName, extname);
-  let destPath = path.join(destDir, originalFileName);
-  let counter = 1;
   
-  // Check if file already exists
-  while (fs.existsSync(destPath)) {
-    // Generate unique ID (timestamp + counter)
-    const uniqueId = `${Date.now()}_${counter}`;
-    const newFileName = `${basename}_${uniqueId}${extname}`;
-    destPath = path.join(destDir, newFileName);
-    counter++;
-  }
+  // Generate UUID for the filename
+  const uuid = crypto.randomUUID();
+  const newFileName = `${basename}_${uuid}${extname}`;
   
-  return path.basename(destPath);
+  return newFileName;
 }
 
 ipcMain.handle('upload-images', async (event, projectPath) => {
@@ -181,12 +175,11 @@ ipcMain.handle('upload-images', async (event, projectPath) => {
     const uniqueFileName = await generateUniqueFilename(destDir, originalFileName);
     const destPath = path.join(destDir, uniqueFileName);
     
-    if (originalFileName !== uniqueFileName) {
-      renamedFiles.push({
-        original: originalFileName,
-        renamed: uniqueFileName
-      });
-    }
+    // Since we're always appending UUID, the file will always be renamed
+    renamedFiles.push({
+      original: originalFileName,
+      renamed: uniqueFileName
+    });
     
     await fsp.copyFile(filePath, destPath);
   }
@@ -262,6 +255,36 @@ ipcMain.handle('delete-dataset-images', async (event, projectPath) => {
     return true;
   } catch (error) {
     console.error('Error deleting dataset images:', error);
+    return false;
+  }
+});
+
+// Handler to delete all images in the unlabeled folder
+ipcMain.handle('delete-unlabeled-images', async (event, projectPath) => {
+  const unlabeledDir = path.join(projectPath, 'unlabeled');
+  
+  try {
+    // Check if unlabeled directory exists
+    if (!fs.existsSync(unlabeledDir)) {
+      return false;
+    }
+
+    // Read all files in the unlabeled directory
+    const files = await fsp.readdir(unlabeledDir);
+    
+    // Delete all files (images and any other files)
+    for (const file of files) {
+      const filePath = path.join(unlabeledDir, file);
+      try {
+        await fsp.unlink(filePath);
+      } catch (error) {
+        console.error(`Failed to delete file ${file}:`, error);
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error deleting unlabeled images:', error);
     return false;
   }
 });
