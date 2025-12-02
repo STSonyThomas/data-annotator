@@ -2,9 +2,27 @@
 
 import React, { useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
+import AnnotationEditor from './annotation';
+import TitleBar from './TitleBar';
 
 const App = () => {
   const [project, setProject] = useState(null);
+  const [view, setView] = useState('dashboard'); // 'dashboard' | 'annotation'
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, status: '', fileName: '' });
+
+  useEffect(() => {
+    // Listen for upload progress from main process
+    const removeListener = window.electronAPI.onUploadProgress((event, progress) => {
+      setUploadProgress(progress);
+      if (progress.status === 'starting') {
+        setIsUploading(true);
+      } else if (progress.status === 'completed') {
+        setIsUploading(false);
+      }
+    });
+    return () => removeListener();
+  }, []);
 
   const handleCreateProject = async () => {
     const newProject = await window.electronAPI.createProject();
@@ -16,36 +34,65 @@ const App = () => {
     if (projectData) setProject(projectData);
   };
 
+  if (view === 'annotation') {
+    return <AnnotationEditor onBack={() => setView('dashboard')} />;
+  }
+
   return (
     <div style={{ fontFamily: 'sans-serif', height: '100vh', display: 'flex', flexDirection: 'column', backgroundColor: '#1e1e1e', color: 'white' }}>
-      {project ? (
-        <ProjectView project={project} />
-      ) : (
-        <div style={{ 
-          display: 'flex', 
-          flexDirection: 'column', 
-          alignItems: 'center', 
-          justifyContent: 'center', 
-          flex: 1, 
-          textAlign: 'center', 
-          paddingTop: '30px' 
+      {isUploading && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.8)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
         }}>
-          <div className="window-controls" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 10px', backgroundColor: '#2c2c2c', borderBottom: '1px solid #555', zIndex: 9999 }}>
-            <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'white' }}>Data Labeler</span>
-            <div style={{ display: 'flex', gap: '5px' }}>
-              <button onClick={() => window.electronAPI.minimize()} style={{ padding: '2px 8px', fontSize: '12px', backgroundColor: '#555', color: 'white', border: 'none', borderRadius: '3px' }}>_</button>
-              <button onClick={() => window.electronAPI.maximize()} style={{ padding: '2px 8px', fontSize: '12px', backgroundColor: '#555', color: 'white', border: 'none', borderRadius: '3px' }}>▢</button>
-              <button onClick={() => window.electronAPI.close()} style={{ padding: '2px 8px', fontSize: '12px', backgroundColor: '#555', color: 'white', border: 'none', borderRadius: '3px' }}>✕</button>
+          <div style={{ backgroundColor: '#2c2c2c', padding: '30px', borderRadius: '10px', textAlign: 'center', minWidth: '300px' }}>
+            <h3 style={{ marginTop: 0 }}>Uploading Images...</h3>
+            <p>{uploadProgress.fileName}</p>
+            <div style={{ width: '100%', height: '10px', backgroundColor: '#444', borderRadius: '5px', margin: '15px 0', overflow: 'hidden' }}>
+              <div style={{
+                width: `${(uploadProgress.current / uploadProgress.total) * 100}%`,
+                height: '100%',
+                backgroundColor: '#3498db',
+                transition: 'width 0.2s'
+              }}></div>
             </div>
+            <p>{uploadProgress.current} / {uploadProgress.total}</p>
           </div>
+        </div>
+      )}
+      {project ? (
+        <ProjectView
+          project={project}
+          onOpenAnnotation={() => setView('annotation')}
+        />
+      ) : (
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flex: 1,
+          textAlign: 'center',
+          paddingTop: '30px'
+        }}>
+          <TitleBar />
           <h1 style={{ color: 'white', marginBottom: '20px', fontSize: '2.5rem' }}>Welcome to Data Labeler</h1>
           <p style={{ color: '#ccc', marginBottom: '30px', fontSize: '1.1rem' }}>Create or open a project to start annotating your images</p>
           <div style={{ marginTop: '30px' }}>
-            <button 
-              onClick={handleCreateProject} 
-              style={{ 
-                marginRight: '15px', 
-                padding: '12px 24px', 
+            <button
+              onClick={handleCreateProject}
+              style={{
+                marginRight: '15px',
+                padding: '12px 24px',
                 fontSize: '16px',
                 backgroundColor: '#3498db',
                 color: 'white',
@@ -57,10 +104,10 @@ const App = () => {
             >
               Create New Project
             </button>
-            <button 
-              onClick={handleOpenProject} 
-              style={{ 
-                padding: '12px 24px', 
+            <button
+              onClick={handleOpenProject}
+              style={{
+                padding: '12px 24px',
                 fontSize: '16px',
                 backgroundColor: '#2ecc71',
                 color: 'white',
@@ -79,7 +126,7 @@ const App = () => {
   );
 };
 
-const ProjectView = ({ project }) => {
+const ProjectView = ({ project, onOpenAnnotation }) => {
   const [files, setFiles] = useState({
     unlabeled: { images: [] },
     annotation: { images: [] },
@@ -92,6 +139,7 @@ const ProjectView = ({ project }) => {
   const [models, setModels] = useState([]);
   const [showModelModal, setShowModelModal] = useState(false);
   const [editingModel, setEditingModel] = useState(null);
+  const [browserState, setBrowserState] = useState({ isOpen: false, stage: null });
 
   const fetchFiles = async () => {
     if (!project || !project.path) return;
@@ -142,7 +190,7 @@ const ProjectView = ({ project }) => {
     const result = await window.electronAPI.uploadImages(project.path);
     if (result && result.success) {
       fetchFiles();
-      
+
       // Show notification if any files were renamed due to duplicates
       if (result.renamedFiles) {
         const renamedCount = result.renamedFiles.length;
@@ -185,7 +233,9 @@ const ProjectView = ({ project }) => {
 
   const handleLabel = () => {
     if (files.annotation.images.length > 0) {
-      window.electronAPI.openAnnotationWindow(project.path);
+      // Use the prop callback instead of IPC
+      window.electronAPI.openAnnotationWindow(project.path); // Keep this to update cache
+      onOpenAnnotation();
     } else {
       console.log("No files in 'To Annotate' to label.");
     }
@@ -317,6 +367,36 @@ const ProjectView = ({ project }) => {
     setSelectedFiles({ ...selectedFiles, [stage]: newSelection });
   };
 
+  const openBrowser = (stage) => {
+    console.log('Opening browser for stage:', stage);
+    setBrowserState({ isOpen: true, stage });
+  };
+
+  const closeBrowser = () => {
+    setBrowserState({ isOpen: false, stage: null });
+  };
+
+  const handleRenameImage = async (stage, oldName, newName) => {
+    const result = await window.electronAPI.renameImage(project.path, stage, oldName, newName);
+    if (result.success) {
+      fetchFiles();
+    } else {
+      alert(`Failed to rename: ${result.error}`);
+    }
+  };
+
+  const handleDeleteImages = async (stage, fileNames) => {
+    const result = await window.electronAPI.deleteImages(project.path, stage, fileNames);
+    if (result.success) {
+      fetchFiles();
+      if (result.errors.length > 0) {
+        alert(`Deleted ${result.count} images. Failed to delete: ${result.errors.join(', ')}`);
+      }
+    } else {
+      alert('Failed to delete images');
+    }
+  };
+
   // Dataset Modal Component
   const DatasetModal = ({ isOpen, onClose, onSubmit, totalImages }) => {
     const [datasetName, setDatasetName] = useState('');
@@ -384,7 +464,7 @@ const ProjectView = ({ project }) => {
                 placeholder="e.g., dataset-v1"
               />
             </div>
-            
+
             <div style={{ marginBottom: '15px' }}>
               <p style={{ color: '#ccc', margin: '0 0 10px 0' }}>Total Images: {totalImages}</p>
             </div>
@@ -446,7 +526,7 @@ const ProjectView = ({ project }) => {
               />
             </div>
 
-            <div style={{ 
+            <div style={{
               color: trainSplit + validSplit + testSplit === 100 ? '#27ae60' : '#e74c3c',
               marginBottom: '20px',
               fontSize: '14px'
@@ -489,6 +569,169 @@ const ProjectView = ({ project }) => {
     );
   };
 
+  // Image Browser Modal Component
+  const ImageBrowserModal = ({ isOpen, onClose, images, stage, projectPath, onRename, onDelete }) => {
+    const [selectedImages, setSelectedImages] = useState([]);
+    const [renamingImage, setRenamingImage] = useState(null);
+    const [newName, setNewName] = useState('');
+    const [imageUrls, setImageUrls] = useState({});
+
+    // Load thumbnails when modal opens
+    useEffect(() => {
+      console.log('ImageBrowserModal open:', isOpen, 'Images:', images.length);
+      if (isOpen && images.length > 0) {
+        const loadThumbnails = async () => {
+          console.log('Loading thumbnails...');
+          const urls = {};
+          // Load a subset or all? Let's try loading all for now but maybe limit concurrency if needed
+          // For better performance, we could implement lazy loading, but let's start simple
+          for (const img of images) {
+            try {
+              console.log(`Requesting image: ${img.name} from stage: ${stage}, projectPath: ${projectPath}`);
+              if (!projectPath) {
+                console.error('Missing projectPath!');
+                continue;
+              }
+              const data = await window.electronAPI.getImageData(projectPath, img.name, stage);
+              if (data) {
+                urls[img.name] = `data:image/jpeg;base64,${data}`;
+              }
+            } catch (e) {
+              console.error("Failed to load thumbnail", e);
+            }
+          }
+          setImageUrls(urls);
+        };
+        loadThumbnails();
+      } else {
+        setImageUrls({});
+        setSelectedImages([]);
+      }
+    }, [isOpen, images]);
+
+    const handleSelect = (name) => {
+      setSelectedImages(prev => {
+        if (prev.includes(name)) return prev.filter(n => n !== name);
+        return [...prev, name];
+      });
+    };
+
+    const handleSelectAll = () => {
+      if (selectedImages.length === images.length) {
+        setSelectedImages([]);
+      } else {
+        setSelectedImages(images.map(img => img.name));
+      }
+    };
+
+    const startRenaming = () => {
+      if (selectedImages.length === 1) {
+        setRenamingImage(selectedImages[0]);
+        setNewName(selectedImages[0]);
+      }
+    };
+
+    const submitRename = () => {
+      if (newName && newName !== renamingImage) {
+        onRename(stage, renamingImage, newName);
+        setRenamingImage(null);
+        setSelectedImages([]);
+      } else {
+        setRenamingImage(null);
+      }
+    };
+
+    const handleDelete = () => {
+      if (selectedImages.length > 0) {
+        if (confirm(`Are you sure you want to delete ${selectedImages.length} images?`)) {
+          onDelete(stage, selectedImages);
+          setSelectedImages([]);
+        }
+      }
+    };
+
+    if (!isOpen) return null;
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0, left: 0, right: 0, bottom: 0,
+        backgroundColor: 'rgba(0,0,0,0.85)',
+        zIndex: 10000,
+        display: 'flex',
+        flexDirection: 'column',
+        padding: '20px'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', color: 'white' }}>
+          <h2>{stage.charAt(0).toUpperCase() + stage.slice(1)} Images ({images.length})</h2>
+          <div style={{ display: 'flex', gap: '2rem' }}>
+            <button onClick={handleSelectAll} style={{ padding: '8px 15px', borderRadius: '4px', border: 'none', cursor: 'pointer', backgroundColor: '#555', color: 'white' }}>
+              {selectedImages.length === images.length ? 'Deselect All' : 'Select All'}
+            </button>
+            {selectedImages.length === 1 && (
+              <button onClick={startRenaming} style={{ padding: '8px 15px', borderRadius: '4px', border: 'none', cursor: 'pointer', backgroundColor: '#3498db', color: 'white' }}>
+                Rename
+              </button>
+            )}
+            {selectedImages.length > 0 && (
+              <button onClick={handleDelete} style={{ padding: '8px 15px', borderRadius: '4px', border: 'none', cursor: 'pointer', backgroundColor: '#e74c3c', color: 'white' }}>
+                Delete ({selectedImages.length})
+              </button>
+            )}
+            <button onClick={onClose} style={{ padding: '8px 15px', borderRadius: '4px', border: 'none', cursor: 'pointer', backgroundColor: '#95a5a6', color: 'white' }}>
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', padding: '20px' }}>
+          {images.map(img => (
+            <div
+              key={img.name}
+              onClick={() => handleSelect(img.name)}
+              style={{
+                position: 'relative',
+                border: selectedImages.includes(img.name) ? '2px solid #3498db' : '1px solid #555',
+                borderRadius: '6px',
+                overflow: 'hidden',
+                cursor: 'pointer',
+                backgroundColor: '#333',
+                display: 'flex',
+                alignItems: 'center',
+                padding: '10px',
+                height: '80px'
+              }}
+            >
+              <div style={{ width: '80px', height: '60px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#222', marginRight: '15px', borderRadius: '4px', overflow: 'hidden' }}>
+                {imageUrls[img.name] ? (
+                  <img src={imageUrls[img.name]} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                ) : (
+                  <span style={{ color: '#666', fontSize: '10px' }}>Loading...</span>
+                )}
+              </div>
+              <div style={{ flex: 1, color: 'white', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {renamingImage === img.name ? (
+                  <input
+                    autoFocus
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    onBlur={submitRename}
+                    onKeyDown={e => e.key === 'Enter' && submitRename()}
+                    onClick={e => e.stopPropagation()}
+                    style={{ width: '300px', padding: '5px', borderRadius: '4px', border: '1px solid #3498db', backgroundColor: '#404040', color: 'white' }}
+                  />
+                ) : img.name}
+              </div>
+              {selectedImages.includes(img.name) && (
+                <div style={{ marginLeft: '10px', backgroundColor: '#3498db', borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '14px' }}>✓</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   // Model Modal Component
   const ModelModal = ({ isOpen, onClose, onSubmit, editingModel }) => {
     const [modelName, setModelName] = useState('');
@@ -520,7 +763,7 @@ const ProjectView = ({ project }) => {
         alert('Please enter an endpoint URL');
         return;
       }
-      
+
       // Basic URL validation
       try {
         new URL(endpoint);
@@ -676,42 +919,42 @@ const ProjectView = ({ project }) => {
     );
   };
 
-  const StageColumn = ({ stage, title, onMoveLeft, onMoveRight, onMoveAll, onLabel, onMoveAnnotated, onCreateDataset, onDeleteAll }) => {
+  const StageColumn = ({ stage, title, onMoveLeft, onMoveRight, onMoveAll, onLabel, onMoveAnnotated, onCreateDataset, onDeleteAll, onExpand }) => {
     const images = files[stage]?.images || [];
     const displayedImages = images.slice(0, 4);
     const remainingCount = Math.max(0, images.length - 4);
 
     return (
-      <div style={{ 
-        flex: 1, 
-        border: '1px solid #555', 
-        borderRadius: '8px', 
-        display: 'flex', 
-        flexDirection: 'column', 
+      <div style={{
+        flex: 1,
+        border: '1px solid #555',
+        borderRadius: '8px',
+        display: 'flex',
+        flexDirection: 'column',
         backgroundColor: '#2c2c2c',
         boxShadow: '0 2px 8px rgba(0,0,0,0.3)'
       }}>
-        <div style={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'center', 
-          borderBottom: '1px solid #555', 
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderBottom: '1px solid #555',
           padding: '15px',
           backgroundColor: '#3c3c3c',
           borderRadius: '8px 8px 0 0'
         }}>
-          <h3 style={{ 
-            textAlign: 'center', 
-            margin: 0, 
-            marginRight: '10px', 
+          <h3 style={{
+            textAlign: 'center',
+            margin: 0,
+            marginRight: '10px',
             color: 'white',
             fontSize: '1.1rem'
           }}>
             {title} ({images.length})
           </h3>
           {onLabel && (
-            <button 
-              onClick={onLabel} 
+            <button
+              onClick={onLabel}
               disabled={images.length === 0}
               style={{
                 padding: '8px 12px',
@@ -727,8 +970,8 @@ const ProjectView = ({ project }) => {
             </button>
           )}
           {onCreateDataset && (
-            <button 
-              onClick={onCreateDataset} 
+            <button
+              onClick={onCreateDataset}
               disabled={images.length === 0}
               style={{
                 padding: '8px 12px',
@@ -744,9 +987,29 @@ const ProjectView = ({ project }) => {
               📦 Create Dataset
             </button>
           )}
+          {onExpand && (
+            <button
+              onClick={() => {
+                console.log('Expand button clicked');
+                onExpand();
+              }}
+              style={{
+                padding: '8px 12px',
+                backgroundColor: '#3498db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                marginLeft: '8px'
+              }}
+            >
+              🔍 Expand
+            </button>
+          )}
           {onDeleteAll && (
-            <button 
-              onClick={onDeleteAll} 
+            <button
+              onClick={onDeleteAll}
               disabled={images.length === 0}
               style={{
                 padding: '8px 12px',
@@ -755,7 +1018,8 @@ const ProjectView = ({ project }) => {
                 border: 'none',
                 borderRadius: '4px',
                 cursor: images.length === 0 ? 'not-allowed' : 'pointer',
-                fontSize: '12px'
+                fontSize: '12px',
+                marginLeft: '8px'
               }}
             >
               🗑️ Delete All
@@ -765,10 +1029,10 @@ const ProjectView = ({ project }) => {
         <div style={{ overflowY: 'auto', flex: 1, padding: '5px' }}>
           {displayedImages.map(fileInfo => {
             // Truncate filename to first 10 characters + extension
-            const truncatedName = fileInfo.name.length > 14 
+            const truncatedName = fileInfo.name.length > 14
               ? fileInfo.name.substring(0, 10) + '...' + fileInfo.name.substring(fileInfo.name.lastIndexOf('.'))
               : fileInfo.name;
-            
+
             return (
               <div
                 key={fileInfo.name}
@@ -810,17 +1074,17 @@ const ProjectView = ({ project }) => {
             </div>
           )}
         </div>
-        <div style={{ 
-          padding: '10px', 
-          borderTop: '1px solid #555', 
-          display: 'flex', 
-          justifyContent: 'space-between', 
+        <div style={{
+          padding: '10px',
+          borderTop: '1px solid #555',
+          display: 'flex',
+          justifyContent: 'space-between',
           gap: '5px',
           backgroundColor: '#3c3c3c',
           borderRadius: '0 0 8px 8px'
         }}>
           {onMoveLeft && (
-            <button 
+            <button
               onClick={onMoveLeft}
               style={{
                 padding: '6px 12px',
@@ -836,7 +1100,7 @@ const ProjectView = ({ project }) => {
             </button>
           )}
           {onMoveAll && (
-            <button 
+            <button
               onClick={onMoveAll}
               disabled={images.length === 0}
               style={{
@@ -854,7 +1118,7 @@ const ProjectView = ({ project }) => {
           )}
           <div style={{ flex: 1 }}></div>
           {onMoveAnnotated && (
-            <button 
+            <button
               onClick={onMoveAnnotated}
               style={{
                 padding: '6px 12px',
@@ -870,7 +1134,7 @@ const ProjectView = ({ project }) => {
             </button>
           )}
           {onMoveRight && (
-            <button 
+            <button
               onClick={onMoveRight}
               style={{
                 padding: '6px 12px',
@@ -892,20 +1156,13 @@ const ProjectView = ({ project }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', backgroundColor: '#1e1e1e', color: 'white' }}>
-      <div className="window-controls" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 10px', backgroundColor: '#2c2c2c', borderBottom: '1px solid #555', zIndex: 9999 }}>
-        <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'white' }}>Data Labeler</span>
-        <div style={{ display: 'flex', gap: '5px' }}>
-          <button onClick={() => window.electronAPI.minimize()} style={{ padding: '2px 8px', fontSize: '12px', backgroundColor: '#555', color: 'white', border: 'none', borderRadius: '3px' }}>_</button>
-          <button onClick={() => window.electronAPI.maximize()} style={{ padding: '2px 8px', fontSize: '12px', backgroundColor: '#555', color: 'white', border: 'none', borderRadius: '3px' }}>▢</button>
-          <button onClick={() => window.electronAPI.close()} style={{ padding: '2px 8px', fontSize: '12px', backgroundColor: '#555', color: 'white', border: 'none', borderRadius: '3px' }}>✕</button>
-        </div>
-      </div>
-      
+      <TitleBar />
+
       <div style={{ display: 'flex', flex: 1, marginTop: '30px' }}>
         {/* Sidebar */}
-        <div style={{ 
-          width: '200px', 
-          backgroundColor: '#2c2c2c', 
+        <div style={{
+          width: '200px',
+          backgroundColor: '#2c2c2c',
           borderRight: '1px solid #555',
           display: 'flex',
           flexDirection: 'column'
@@ -914,7 +1171,7 @@ const ProjectView = ({ project }) => {
             <h3 style={{ margin: '0 0 5px 0', color: 'white', fontSize: '1.2rem' }}>{project.name}</h3>
             <p style={{ margin: '0', color: '#ccc', fontSize: '0.8rem' }}>Project</p>
           </div>
-          
+
           <div style={{ flex: 1 }}>
             <button
               onClick={() => setActiveTab('overview')}
@@ -971,14 +1228,14 @@ const ProjectView = ({ project }) => {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           {activeTab === 'overview' ? (
             <>
-              <div style={{ 
-                padding: '20px', 
-                borderBottom: '1px solid #555', 
+              <div style={{
+                padding: '20px',
+                borderBottom: '1px solid #555',
                 backgroundColor: '#2c2c2c'
               }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '10px' }}>
                   <p style={{ color: '#ccc', margin: '0', fontSize: '0.9rem' }}>{project.path}</p>
-                  <button 
+                  <button
                     onClick={handleUpload}
                     style={{
                       padding: '10px 20px',
@@ -1003,6 +1260,7 @@ const ProjectView = ({ project }) => {
                   onMoveRight={() => handleMove('unlabeled', 'annotation')}
                   onMoveAll={() => handleMoveAll('unlabeled', 'annotation')}
                   onDeleteAll={handleDeleteAllUnlabeledImages}
+                  onExpand={() => openBrowser('unlabeled')}
                 />
                 <StageColumn
                   stage="annotation"
@@ -1011,6 +1269,7 @@ const ProjectView = ({ project }) => {
                   onMoveRight={() => handleMove('annotation', 'dataset')}
                   onLabel={handleLabel}
                   onMoveAnnotated={handleMoveAnnotated}
+                  onExpand={() => openBrowser('annotation')}
                 />
                 <StageColumn
                   stage="dataset"
@@ -1018,6 +1277,7 @@ const ProjectView = ({ project }) => {
                   onMoveLeft={() => handleMove('dataset', 'annotation')}
                   onCreateDataset={() => setShowDatasetModal(true)}
                   onDeleteAll={handleDeleteAllDatasetImages}
+                  onExpand={() => openBrowser('dataset')}
                 />
               </div>
             </>
@@ -1030,11 +1290,11 @@ const ProjectView = ({ project }) => {
                   Manage your created datasets with train/validation/test splits
                 </p>
               </div>
-              
+
               {datasets.length === 0 ? (
-                <div style={{ 
-                  textAlign: 'center', 
-                  padding: '40px', 
+                <div style={{
+                  textAlign: 'center',
+                  padding: '40px',
                   color: '#666',
                   backgroundColor: '#2c2c2c',
                   borderRadius: '8px',
@@ -1046,7 +1306,7 @@ const ProjectView = ({ project }) => {
               ) : (
                 <div style={{ display: 'grid', gap: '15px' }}>
                   {datasets.map((dataset, index) => (
-                    <div 
+                    <div
                       key={index}
                       style={{
                         backgroundColor: '#2c2c2c',
@@ -1116,11 +1376,11 @@ const ProjectView = ({ project }) => {
                   🤖 Add Model
                 </button>
               </div>
-              
+
               {models.length === 0 ? (
-                <div style={{ 
-                  textAlign: 'center', 
-                  padding: '40px', 
+                <div style={{
+                  textAlign: 'center',
+                  padding: '40px',
                   color: '#666',
                   backgroundColor: '#2c2c2c',
                   borderRadius: '8px',
@@ -1132,7 +1392,7 @@ const ProjectView = ({ project }) => {
               ) : (
                 <div style={{ display: 'grid', gap: '15px' }}>
                   {models.map((model, index) => (
-                    <div 
+                    <div
                       key={model.id || index}
                       style={{
                         backgroundColor: '#2c2c2c',
@@ -1204,7 +1464,7 @@ const ProjectView = ({ project }) => {
       </div>
 
       {/* Dataset Modal */}
-      <DatasetModal 
+      <DatasetModal
         isOpen={showDatasetModal}
         onClose={() => setShowDatasetModal(false)}
         onSubmit={handleCreateDataset}
@@ -1212,11 +1472,21 @@ const ProjectView = ({ project }) => {
       />
 
       {/* Model Modal */}
-      <ModelModal 
+      <ModelModal
         isOpen={showModelModal}
         onClose={() => setShowModelModal(false)}
         onSubmit={handleCreateModel}
         editingModel={editingModel}
+      />
+
+      <ImageBrowserModal
+        isOpen={browserState.isOpen}
+        onClose={closeBrowser}
+        images={files[browserState.stage]?.images || []}
+        stage={browserState.stage}
+        projectPath={project.path}
+        onRename={handleRenameImage}
+        onDelete={handleDeleteImages}
       />
     </div>
   );

@@ -11,7 +11,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openProject: () => ipcRenderer.invoke('open-project'),
   listProjectFiles: (projectPath) => ipcRenderer.invoke('list-project-files', projectPath),
   uploadImages: (projectPath) => ipcRenderer.invoke('upload-images', projectPath),
+  onUploadProgress: (callback) => {
+    const subscription = (event, ...args) => callback(event, ...args);
+    ipcRenderer.on('upload-progress', subscription);
+    return () => ipcRenderer.removeListener('upload-progress', subscription);
+  },
   moveImages: (projectPath, files, fromStage, toStage) => ipcRenderer.invoke('move-images', projectPath, files, fromStage, toStage),
+  renameImage: (projectPath, stage, oldName, newName) => ipcRenderer.invoke('rename-image', projectPath, stage, oldName, newName),
+  deleteImages: (projectPath, stage, fileNames) => ipcRenderer.invoke('delete-images', projectPath, stage, fileNames),
   deleteDatasetImages: (projectPath) => ipcRenderer.invoke('delete-dataset-images', projectPath),
   deleteUnlabeledImages: (projectPath) => ipcRenderer.invoke('delete-unlabeled-images', projectPath),
   openAnnotationWindow: (projectPath) => ipcRenderer.invoke('open-annotation-window', projectPath),
@@ -19,20 +26,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Annotation window functions
   getAnnotationList: () => ipcRenderer.invoke('get-annotation-list'),
-  getImageData: (imageName) => ipcRenderer.invoke('get-image-data', imageName),
+  getImageData: (projectPath, imageName, stage) => ipcRenderer.invoke('get-image-data', projectPath, imageName, stage),
   getProjectPath: () => ipcRenderer.invoke('get-project-path'),
   saveYoloLabels: (imageName, labels) => ipcRenderer.invoke('save-yolo-labels', imageName, labels),
   getLabels: (imageName) => ipcRenderer.invoke('get-labels', imageName),
-  
+
   // Class management functions
   getProjectClasses: () => ipcRenderer.invoke('get-project-classes'),
   saveProjectClasses: (classes) => ipcRenderer.invoke('save-project-classes', classes),
-  
+
   // Dataset management functions
   getDatasets: (projectPath) => ipcRenderer.invoke('get-datasets', projectPath),
   createDataset: (projectPath, datasetConfig) => ipcRenderer.invoke('create-dataset', projectPath, datasetConfig),
   deleteDataset: (projectPath, datasetName) => ipcRenderer.invoke('delete-dataset', projectPath, datasetName),
-  
+
   // Model management functions
   getModels: (projectPath) => ipcRenderer.invoke('get-models', projectPath),
   createModel: (projectPath, modelConfig) => ipcRenderer.invoke('create-model', projectPath, modelConfig),

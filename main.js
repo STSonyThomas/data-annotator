@@ -9,6 +9,7 @@ const crypto = require('crypto');
 // --- App Setup and Window Management ---
 
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('disable-features', 'Autofill');
 const isDev = process.env.NODE_ENV !== 'production';
 let projectPathCache = null; // Cache the project path for the annotation window
 
@@ -27,32 +28,25 @@ function createMainWindow() {
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
+    mainWindow.webContents.openDevTools(); // Open DevTools by default in dev mode
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
   }
-}
 
-function createAnnotationWindow() {
-  const annotationWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    parent: BrowserWindow.getAllWindows()[0],
-    modal: true,
-    frame: false, // Removes OS window frame
-    titleBarStyle: 'hiddenInset', // Optional: hides native title bar but keeps traffic lights on macOS
-    backgroundColor: '#1e1e1e', // Match your app's background
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-    },
+  // Add keyboard shortcut to toggle DevTools
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.control && input.shift && input.key.toLowerCase() === 'i') {
+      mainWindow.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+    if (input.key === 'F12') {
+      mainWindow.webContents.toggleDevTools();
+      event.preventDefault();
+    }
   });
-
-  if (isDev) {
-    annotationWindow.loadURL('http://localhost:5173/annotation.html');
-  } else {
-    annotationWindow.loadFile(path.join(__dirname, 'dist', 'annotation.html'));
-  }
 }
+
+// createAnnotationWindow function removed
 
 app.whenReady().then(createMainWindow);
 
@@ -146,15 +140,26 @@ ipcMain.handle('list-project-files', async (event, projectPath) => {
   return filesByStage;
 });
 
-// Helper function to generate unique filename if duplicate exists
+// Helper function to generate unique filename with (i) suffix
 async function generateUniqueFilename(destDir, originalFileName) {
   const extname = path.extname(originalFileName);
   const basename = path.basename(originalFileName, extname);
-  
-  // Generate UUID for the filename
-  const uuid = crypto.randomUUID();
-  const newFileName = `${basename}_${uuid}${extname}`;
-  
+
+  let newFileName = originalFileName;
+  let counter = 1;
+
+  while (true) {
+    try {
+      await fsp.access(path.join(destDir, newFileName));
+      // File exists, try next counter
+      newFileName = `${basename} (${counter})${extname}`;
+      counter++;
+    } catch (error) {
+      // File does not exist, use this name
+      break;
+    }
+  }
+
   return newFileName;
 }
 
@@ -169,24 +174,42 @@ ipcMain.handle('upload-images', async (event, projectPath) => {
 
   const destDir = path.join(projectPath, 'unlabeled');
   const renamedFiles = [];
+  const totalFiles = filePaths.length;
 
-  for (const filePath of filePaths) {
+  // Send start event
+  event.sender.send('upload-progress', { current: 0, total: totalFiles, status: 'starting' });
+
+  for (let i = 0; i < totalFiles; i++) {
+    const filePath = filePaths[i];
     const originalFileName = path.basename(filePath);
+
+    // Notify frontend about current file
+    event.sender.send('upload-progress', {
+      current: i + 1,
+      total: totalFiles,
+      status: 'processing',
+      fileName: originalFileName
+    });
+
     const uniqueFileName = await generateUniqueFilename(destDir, originalFileName);
     const destPath = path.join(destDir, uniqueFileName);
-    
-    // Since we're always appending UUID, the file will always be renamed
-    renamedFiles.push({
-      original: originalFileName,
-      renamed: uniqueFileName
-    });
-    
+
+    if (uniqueFileName !== originalFileName) {
+      renamedFiles.push({
+        original: originalFileName,
+        renamed: uniqueFileName
+      });
+    }
+
     await fsp.copyFile(filePath, destPath);
   }
-  
-  return { 
-    success: true, 
-    renamedFiles: renamedFiles.length > 0 ? renamedFiles : null 
+
+  // Send completion event
+  event.sender.send('upload-progress', { current: totalFiles, total: totalFiles, status: 'completed' });
+
+  return {
+    success: true,
+    renamedFiles: renamedFiles.length > 0 ? renamedFiles : null
   };
 });
 
@@ -199,7 +222,7 @@ ipcMain.handle('move-images', async (event, projectPath, filesToMove, fromStage,
     const uniqueFileName = await generateUniqueFilename(toDir, fileName);
     const sourceImagePath = path.join(fromDir, fileName);
     const destImagePath = path.join(toDir, uniqueFileName);
-    
+
     // Move image
     try {
       await fsp.rename(sourceImagePath, destImagePath);
@@ -213,10 +236,10 @@ ipcMain.handle('move-images', async (event, projectPath, filesToMove, fromStage,
     const newBaseName = path.basename(uniqueFileName, path.extname(uniqueFileName));
     const sourceLabelName = originalBaseName + '.txt';
     const destLabelName = newBaseName + '.txt';
-    
+
     const sourceLabelPath = path.join(fromDir, sourceLabelName);
     const destLabelPath = path.join(toDir, destLabelName);
-    
+
     try {
       // Check if source label file exists before trying to move it
       if (fs.existsSync(sourceLabelPath)) {
@@ -229,10 +252,76 @@ ipcMain.handle('move-images', async (event, projectPath, filesToMove, fromStage,
   return true;
 });
 
+ipcMain.handle('rename-image', async (event, projectPath, stage, oldName, newName) => {
+  const dir = path.join(projectPath, stage);
+  const oldPath = path.join(dir, oldName);
+
+  // Ensure new name has extension
+  if (!path.extname(newName)) {
+    newName += path.extname(oldName);
+  }
+
+  const newPath = path.join(dir, newName);
+
+  try {
+    // Check if new name already exists
+    try {
+      await fsp.access(newPath);
+      return { success: false, error: 'File with this name already exists' };
+    } catch (e) {
+      // File doesn't exist, proceed
+    }
+
+    await fsp.rename(oldPath, newPath);
+
+    // Rename label file if it exists
+    const oldBaseName = path.basename(oldName, path.extname(oldName));
+    const newBaseName = path.basename(newName, path.extname(newName));
+    const oldLabelPath = path.join(dir, oldBaseName + '.txt');
+    const newLabelPath = path.join(dir, newBaseName + '.txt');
+
+    if (fs.existsSync(oldLabelPath)) {
+      await fsp.rename(oldLabelPath, newLabelPath);
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error renaming file:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('delete-images', async (event, projectPath, stage, fileNames) => {
+  const dir = path.join(projectPath, stage);
+  let successCount = 0;
+  let errors = [];
+
+  for (const fileName of fileNames) {
+    const filePath = path.join(dir, fileName);
+    try {
+      await fsp.unlink(filePath);
+
+      // Delete label file if it exists
+      const baseName = path.basename(fileName, path.extname(fileName));
+      const labelPath = path.join(dir, baseName + '.txt');
+      if (fs.existsSync(labelPath)) {
+        await fsp.unlink(labelPath);
+      }
+
+      successCount++;
+    } catch (error) {
+      console.error(`Error deleting ${fileName}:`, error);
+      errors.push(fileName);
+    }
+  }
+
+  return { success: true, count: successCount, errors };
+});
+
 // Handler to delete all images in the dataset folder
 ipcMain.handle('delete-dataset-images', async (event, projectPath) => {
   const datasetDir = path.join(projectPath, 'dataset');
-  
+
   try {
     // Check if dataset directory exists
     if (!fs.existsSync(datasetDir)) {
@@ -241,7 +330,7 @@ ipcMain.handle('delete-dataset-images', async (event, projectPath) => {
 
     // Read all files in the dataset directory
     const files = await fsp.readdir(datasetDir);
-    
+
     // Delete all files
     for (const file of files) {
       const filePath = path.join(datasetDir, file);
@@ -251,7 +340,7 @@ ipcMain.handle('delete-dataset-images', async (event, projectPath) => {
         console.error(`Failed to delete file ${file}:`, error);
       }
     }
-    
+
     return true;
   } catch (error) {
     console.error('Error deleting dataset images:', error);
@@ -262,7 +351,7 @@ ipcMain.handle('delete-dataset-images', async (event, projectPath) => {
 // Handler to delete all images in the unlabeled folder
 ipcMain.handle('delete-unlabeled-images', async (event, projectPath) => {
   const unlabeledDir = path.join(projectPath, 'unlabeled');
-  
+
   try {
     // Check if unlabeled directory exists
     if (!fs.existsSync(unlabeledDir)) {
@@ -271,7 +360,7 @@ ipcMain.handle('delete-unlabeled-images', async (event, projectPath) => {
 
     // Read all files in the unlabeled directory
     const files = await fsp.readdir(unlabeledDir);
-    
+
     // Delete all files (images and any other files)
     for (const file of files) {
       const filePath = path.join(unlabeledDir, file);
@@ -281,7 +370,7 @@ ipcMain.handle('delete-unlabeled-images', async (event, projectPath) => {
         console.error(`Failed to delete file ${file}:`, error);
       }
     }
-    
+
     return true;
   } catch (error) {
     console.error('Error deleting unlabeled images:', error);
@@ -291,19 +380,15 @@ ipcMain.handle('delete-unlabeled-images', async (event, projectPath) => {
 
 // --- Annotation Window Handlers ---
 
+// Annotation window creation removed as it is now part of the main window
+
 ipcMain.handle('open-annotation-window', (event, projectPath) => {
   projectPathCache = projectPath;
-  createAnnotationWindow();
+  // createAnnotationWindow(); // No longer needed
 });
 
 ipcMain.handle('close-annotation-window', () => {
-  const annotationWindow = BrowserWindow.getAllWindows().find(win => 
-    win.webContents.getURL().includes('annotation.html') || 
-    win.webContents.getURL().includes('annotation')
-  );
-  if (annotationWindow) {
-    annotationWindow.close();
-  }
+  // No-op or remove if not called from frontend
 });
 
 ipcMain.handle('get-annotation-list', async () => {
@@ -319,11 +404,23 @@ ipcMain.handle('get-annotation-list', async () => {
   }));
 });
 
-ipcMain.handle('get-image-data', async (event, imageName) => {
-  if (!projectPathCache) return null;
-  const imagePath = path.join(projectPathCache, 'annotation', imageName);
-  const data = await fsp.readFile(imagePath, 'base64');
-  return data;
+ipcMain.handle('get-image-data', async (event, projectPath, imageName, stage = 'annotation') => {
+  // Use provided projectPath or fallback to cache (for backward compatibility if needed, though we should enforce passing it)
+  const targetPath = projectPath || projectPathCache;
+
+  if (!targetPath) {
+    console.log('❌ [Backend] No project path provided or cached');
+    return null;
+  }
+  const imagePath = path.join(targetPath, stage, imageName);
+  console.log(`📂 [Backend] Loading image: ${imageName} from stage: ${stage} -> Path: ${imagePath}`);
+  try {
+    const data = await fsp.readFile(imagePath, 'base64');
+    return data;
+  } catch (error) {
+    console.error(`Failed to load image ${imageName} from ${stage} (Path: ${imagePath}):`, error);
+    return null;
+  }
 });
 
 // Get current project path (used by annotation window)
@@ -342,11 +439,35 @@ ipcMain.handle('save-yolo-labels', async (event, imageName, labels) => {
 
   const labelName = path.basename(imageName, path.extname(imageName)) + '.txt';
   const labelPath = path.join(projectPathCache, 'annotation', labelName);
+  const imagePath = path.join(projectPathCache, 'annotation', imageName);
 
   console.log('📁 [Backend] Saving to:', labelPath);
 
   try {
-    await fsp.writeFile(labelPath, labels);
+    // Get image dimensions for normalization
+    const { width: imgW, height: imgH } = await getImageDimensions(imagePath);
+
+    // Get project classes to find class indices
+    const { classes } = await getProjectConfig();
+
+    // Convert boxes to YOLO format lines
+    const lines = labels.map(box => {
+      const classIndex = classes.indexOf(box.class);
+      if (classIndex === -1) {
+        console.warn(`⚠️ [Backend] Class '${box.class}' not found in project classes`);
+        return null;
+      }
+
+      const x_center = (box.x + box.width / 2) / imgW;
+      const y_center = (box.y + box.height / 2) / imgH;
+      const width = box.width / imgW;
+      const height = box.height / imgH;
+
+      return `${classIndex} ${x_center.toFixed(6)} ${y_center.toFixed(6)} ${width.toFixed(6)} ${height.toFixed(6)}`;
+    }).filter(line => line !== null);
+
+    const content = lines.join('\n');
+    await fsp.writeFile(labelPath, content);
     console.log('✅ [Backend] Labels saved successfully');
 
     // Verify the file was written
@@ -513,16 +634,16 @@ ipcMain.handle('get-datasets', async (event, projectPath) => {
 
 ipcMain.handle('create-dataset', async (event, projectPath, datasetConfig) => {
   console.log('📦 [Backend] Creating dataset:', datasetConfig);
-  
+
   try {
     // Create datasets directory if it doesn't exist
     const datasetsDir = path.join(projectPath, 'datasets');
     await fsp.mkdir(datasetsDir, { recursive: true });
-    
+
     // Create dataset-specific directory
     const datasetDir = path.join(datasetsDir, datasetConfig.name);
     await fsp.mkdir(datasetDir, { recursive: true });
-    
+
     // Create train/valid/test directories with images and labels subdirectories
     const splits = ['train', 'valid', 'test'];
     for (const split of splits) {
@@ -531,48 +652,48 @@ ipcMain.handle('create-dataset', async (event, projectPath, datasetConfig) => {
       await fsp.mkdir(path.join(splitDir, 'images'), { recursive: true });
       await fsp.mkdir(path.join(splitDir, 'labels'), { recursive: true });
     }
-    
+
     // Get all images and labels from dataset folder
     const datasetImagesDir = path.join(projectPath, 'dataset');
     const files = await fsp.readdir(datasetImagesDir);
     const imageFiles = files.filter(f => /\.(jpg|jpeg|png|gif)$/i.test(f));
-    
+
     console.log('📸 [Backend] Found images:', imageFiles.length);
-    
+
     // Shuffle images for random distribution
     const shuffledImages = [...imageFiles].sort(() => Math.random() - 0.5);
-    
+
     // Calculate split indices
     const totalImages = shuffledImages.length;
     const trainCount = Math.floor(totalImages * datasetConfig.trainSplit / 100);
     const validCount = Math.floor(totalImages * datasetConfig.validSplit / 100);
     const testCount = totalImages - trainCount - validCount;
-    
+
     console.log('📊 [Backend] Split counts:', { trainCount, validCount, testCount });
-    
+
     // Distribute images
     const trainImages = shuffledImages.slice(0, trainCount);
     const validImages = shuffledImages.slice(trainCount, trainCount + validCount);
     const testImages = shuffledImages.slice(trainCount + validCount);
-    
+
     const splitData = {
       train: trainImages,
       valid: validImages,
       test: testImages
     };
-    
+
     // Copy images and labels to respective directories
     for (const [splitName, images] of Object.entries(splitData)) {
       const splitImagesDir = path.join(datasetDir, splitName, 'images');
       const splitLabelsDir = path.join(datasetDir, splitName, 'labels');
-      
+
       for (const imageName of images) {
         // Copy image with unique name if needed
         const uniqueImageName = await generateUniqueFilename(splitImagesDir, imageName);
         const sourceImagePath = path.join(datasetImagesDir, imageName);
         const destImagePath = path.join(splitImagesDir, uniqueImageName);
         await fsp.copyFile(sourceImagePath, destImagePath);
-        
+
         // Copy corresponding label file if it exists
         const originalBaseName = path.basename(imageName, path.extname(imageName));
         const newBaseName = path.basename(uniqueImageName, path.extname(uniqueImageName));
@@ -580,7 +701,7 @@ ipcMain.handle('create-dataset', async (event, projectPath, datasetConfig) => {
         const destLabelName = newBaseName + '.txt';
         const sourceLabelPath = path.join(datasetImagesDir, sourceLabelName);
         const destLabelPath = path.join(splitLabelsDir, destLabelName);
-        
+
         try {
           if (fs.existsSync(sourceLabelPath)) {
             await fsp.copyFile(sourceLabelPath, destLabelPath);
@@ -590,7 +711,7 @@ ipcMain.handle('create-dataset', async (event, projectPath, datasetConfig) => {
         }
       }
     }
-    
+
     // Update datasets configuration
     const datasetsConfigPath = path.join(projectPath, 'datasets.json');
     let datasets = [];
@@ -600,7 +721,7 @@ ipcMain.handle('create-dataset', async (event, projectPath, datasetConfig) => {
     } catch (error) {
       // File doesn't exist, start with empty array
     }
-    
+
     const newDataset = {
       name: datasetConfig.name,
       path: datasetDir,
@@ -610,13 +731,13 @@ ipcMain.handle('create-dataset', async (event, projectPath, datasetConfig) => {
       totalImages: totalImages,
       createdAt: new Date().toISOString()
     };
-    
+
     datasets.push(newDataset);
     await fsp.writeFile(datasetsConfigPath, JSON.stringify(datasets, null, 2));
-    
+
     console.log('✅ [Backend] Dataset created successfully');
     return true;
-    
+
   } catch (error) {
     console.error('💥 [Backend] Error creating dataset:', error);
     return false;
@@ -625,12 +746,12 @@ ipcMain.handle('create-dataset', async (event, projectPath, datasetConfig) => {
 
 ipcMain.handle('delete-dataset', async (event, projectPath, datasetName) => {
   console.log('🗑️ [Backend] Deleting dataset:', datasetName);
-  
+
   try {
     // Remove dataset directory
     const datasetDir = path.join(projectPath, 'datasets', datasetName);
     await fsp.rm(datasetDir, { recursive: true, force: true });
-    
+
     // Update datasets configuration
     const datasetsConfigPath = path.join(projectPath, 'datasets.json');
     let datasets = [];
@@ -640,13 +761,13 @@ ipcMain.handle('delete-dataset', async (event, projectPath, datasetName) => {
     } catch (error) {
       return true; // If config doesn't exist, consider it deleted
     }
-    
+
     datasets = datasets.filter(dataset => dataset.name !== datasetName);
     await fsp.writeFile(datasetsConfigPath, JSON.stringify(datasets, null, 2));
-    
+
     console.log('✅ [Backend] Dataset deleted successfully');
     return true;
-    
+
   } catch (error) {
     console.error('💥 [Backend] Error deleting dataset:', error);
     return false;
@@ -659,11 +780,11 @@ ipcMain.handle('delete-dataset', async (event, projectPath, datasetName) => {
 ipcMain.handle('get-models', async (event, projectPath) => {
   try {
     const modelsPath = path.join(projectPath, 'models.json');
-    
+
     if (!fs.existsSync(modelsPath)) {
       return [];
     }
-    
+
     const modelsData = await fsp.readFile(modelsPath, 'utf8');
     return JSON.parse(modelsData);
   } catch (error) {
@@ -677,15 +798,15 @@ ipcMain.handle('create-model', async (event, projectPath, modelConfig) => {
   try {
     const modelsPath = path.join(projectPath, 'models.json');
     let models = [];
-    
+
     if (fs.existsSync(modelsPath)) {
       const modelsData = await fsp.readFile(modelsPath, 'utf8');
       models = JSON.parse(modelsData);
     }
-    
+
     // Generate unique ID for the model if not provided
     const modelId = modelConfig.id || Date.now().toString();
-    
+
     // Convert frontend model structure to backend structure
     const newModel = {
       id: modelId,
@@ -697,17 +818,17 @@ ipcMain.handle('create-model', async (event, projectPath, modelConfig) => {
       description: modelConfig.description || '',
       createdAt: modelConfig.createdAt || new Date().toISOString()
     };
-    
+
     // Add authentication headers if authToken is provided
     if (modelConfig.authToken && modelConfig.authToken.trim()) {
       newModel.headers['Authorization'] = `Bearer ${modelConfig.authToken.trim()}`;
     }
-    
+
     models.push(newModel);
-    
+
     await fsp.writeFile(modelsPath, JSON.stringify(models, null, 2));
     console.log(`Model ${modelConfig.name} created successfully`);
-    
+
     return { success: true, model: newModel };
   } catch (error) {
     console.error('Error creating model:', error);
@@ -719,24 +840,24 @@ ipcMain.handle('create-model', async (event, projectPath, modelConfig) => {
 ipcMain.handle('delete-model', async (event, projectPath, modelId) => {
   try {
     const modelsPath = path.join(projectPath, 'models.json');
-    
+
     if (!fs.existsSync(modelsPath)) {
       return { success: false, error: 'Models file not found' };
     }
-    
+
     const modelsData = await fsp.readFile(modelsPath, 'utf8');
     let models = JSON.parse(modelsData);
-    
+
     const initialLength = models.length;
     models = models.filter(model => model.id !== modelId);
-    
+
     if (models.length === initialLength) {
       return { success: false, error: 'Model not found' };
     }
-    
+
     await fsp.writeFile(modelsPath, JSON.stringify(models, null, 2));
     console.log(`Model ${modelId} deleted successfully`);
-    
+
     return { success: true };
   } catch (error) {
     console.error('Error deleting model:', error);
@@ -748,26 +869,26 @@ ipcMain.handle('delete-model', async (event, projectPath, modelId) => {
 ipcMain.handle('predict-with-model', async (event, projectPath, modelId, imageData) => {
   try {
     const modelsPath = path.join(projectPath, 'models.json');
-    
+
     if (!fs.existsSync(modelsPath)) {
       return { success: false, error: 'Models file not found' };
     }
-    
+
     const modelsData = await fsp.readFile(modelsPath, 'utf8');
     const models = JSON.parse(modelsData);
-    
+
     const model = models.find(m => m.id === modelId);
     if (!model) {
       return { success: false, error: 'Model not found' };
     }
-    
+
     // Import fetch dynamically for HTTP requests
     const { default: fetch } = await import('node-fetch');
     const FormData = (await import('form-data')).default;
-    
+
     // Create FormData for the image upload
     const formData = new FormData();
-    
+
     // Handle different image data formats
     let imageBuffer;
     if (imageData instanceof Buffer) {
@@ -780,50 +901,50 @@ ipcMain.handle('predict-with-model', async (event, projectPath, modelId, imageDa
       // Handle Blob/ArrayBuffer from frontend
       imageBuffer = Buffer.from(imageData);
     }
-    
+
     // Append image as file upload (matching FastAPI's UploadFile expectation)
     formData.append('file', imageBuffer, {
       filename: 'image.jpg',
       contentType: 'image/jpeg'
     });
-    
+
     // Add any additional parameters from the model config
     if (model.confidence) {
       formData.append('confidence', model.confidence.toString());
     }
-    
+
     // Prepare headers
     const headers = {
       ...formData.getHeaders()
     };
-    
+
     // Add authentication headers if available
     if (model.headers && Object.keys(model.headers).length > 0) {
       Object.assign(headers, model.headers);
     }
-    
+
     console.log(`Making prediction request to: ${model.endpoint}`);
-    
+
     // Make the API request
     const response = await fetch(model.endpoint, {
       method: 'POST',
       body: formData,
       headers: headers
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
     }
-    
+
     const result = await response.json();
-    
+
     // Your FastAPI server returns: { predictions: [...] }
     // Extract the predictions array
     const predictions = result.predictions || result;
-    
+
     console.log(`Received ${predictions.length} predictions from model`);
-    
+
     return { success: true, predictions: predictions };
   } catch (error) {
     console.error('Error making prediction:', error);
@@ -834,15 +955,15 @@ ipcMain.handle('predict-with-model', async (event, projectPath, modelId, imageDa
 // --- Window Management Handlers ---
 
 ipcMain.on('window-minimize', () => {
-    BrowserWindow.getFocusedWindow()?.minimize();
+  BrowserWindow.getFocusedWindow()?.minimize();
 });
 
 ipcMain.on('window-maximize', () => {
-    const win = BrowserWindow.getFocusedWindow();
-    if (win?.isMaximized()) win.unmaximize();
-    else win?.maximize();
+  const win = BrowserWindow.getFocusedWindow();
+  if (win?.isMaximized()) win.unmaximize();
+  else win?.maximize();
 });
 
 ipcMain.on('window-close', () => {
-    BrowserWindow.getFocusedWindow()?.close();
+  BrowserWindow.getFocusedWindow()?.close();
 });
