@@ -20,6 +20,7 @@ export const AnnotationEditor = ({ onBack }) => {
     const [selectedClass, setSelectedClass] = useState('');
     const [newClassName, setNewClassName] = useState('');
     const [showFilled, setShowFilled] = useState(true); // State for toggling fill
+    const [zoomLevel, setZoomLevel] = useState(1); // Zoom level (1 = 100%)
 
     // Model prediction states
     const [models, setModels] = useState([]);
@@ -36,6 +37,7 @@ export const AnnotationEditor = ({ onBack }) => {
     // --- Refs ---
     const canvasRef = useRef(null);
     const imageRef = useRef(null);
+    const imageContainerRef = useRef(null);
 
     // --- Constants ---
     const classColors = [
@@ -44,8 +46,24 @@ export const AnnotationEditor = ({ onBack }) => {
         '#FF69B4', '#87CEEB', '#DAA520', '#6A5ACD', '#F08080'
     ];
     const HANDLE_SIZE = 8; // Size of resize handles
+    const MIN_ZOOM = 0.1; // Minimum zoom level (10%)
+    const MAX_ZOOM = 5; // Maximum zoom level (500%)
+    const ZOOM_STEP = 0.1; // Zoom increment/decrement step
 
     // --- Utility Functions ---
+
+    // Zoom functions
+    const handleZoomIn = () => {
+        setZoomLevel(prev => Math.min(MAX_ZOOM, prev + ZOOM_STEP));
+    };
+
+    const handleZoomOut = () => {
+        setZoomLevel(prev => Math.max(MIN_ZOOM, prev - ZOOM_STEP));
+    };
+
+    const handleZoomReset = () => {
+        setZoomLevel(1);
+    };
 
     // Function to get mouse coordinates relative to the canvas
     const getMousePos = (canvas, evt) => {
@@ -169,7 +187,7 @@ export const AnnotationEditor = ({ onBack }) => {
 
         try {
             // Get image data as base64
-            const imageBase64 = await window.electronAPI.getImageData(image.name);
+            const imageBase64 = await window.electronAPI.getImageData(projectPath, image.name, 'annotation');
             if (!imageBase64) {
                 return { success: false, error: 'Failed to load image data' };
             }
@@ -430,8 +448,9 @@ export const AnnotationEditor = ({ onBack }) => {
                     setSelectedClass(loadedClasses[0]);
                 }
 
-                // Load models
-                const loadedModels = await window.electronAPI.getModels(projectPath);
+                // Load models - use the path variable we just retrieved, not the state
+                const loadedModels = await window.electronAPI.getModels(path);
+                console.log('🤖 [AnnotationEditor] Models loaded:', loadedModels);
                 setModels(loadedModels);
                 if (loadedModels.length > 0) {
                     setSelectedModelId(loadedModels[0].id);
@@ -535,6 +554,15 @@ export const AnnotationEditor = ({ onBack }) => {
                 } else {
                     alert('No previous image to copy labels from.');
                 }
+            } else if (e.key === '+' || e.key === '=') {
+                e.preventDefault();
+                handleZoomIn();
+            } else if (e.key === '-' || e.key === '_') {
+                e.preventDefault();
+                handleZoomOut();
+            } else if (e.key === '0' && !e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                handleZoomReset();
             }
         };
 
@@ -762,9 +790,10 @@ export const AnnotationEditor = ({ onBack }) => {
         // Position relative to the viewport
         // We need to account for the canvas position on the screen
         // The box coordinates are relative to the image/canvas
+        // Also account for zoom level
 
-        const scaleX = rect.width / canvas.width;
-        const scaleY = rect.height / canvas.height;
+        const scaleX = (rect.width / canvas.width) * zoomLevel;
+        const scaleY = (rect.height / canvas.height) * zoomLevel;
 
         const boxX = box.x * scaleX + rect.left;
         const boxY = box.y * scaleY + rect.top;
@@ -960,6 +989,72 @@ export const AnnotationEditor = ({ onBack }) => {
                         {showFilled ? '⬛' : '⬜'}
                     </button>
 
+                    <div style={{ width: '30px', height: '1px', backgroundColor: '#3e3e42', margin: '5px 0' }}></div>
+
+                    <button
+                        title="Zoom In (+)"
+                        onClick={handleZoomIn}
+                        disabled={zoomLevel >= MAX_ZOOM}
+                        style={{
+                            width: '36px',
+                            height: '36px',
+                            borderRadius: '4px',
+                            border: '1px solid transparent',
+                            backgroundColor: 'transparent',
+                            color: zoomLevel >= MAX_ZOOM ? '#555' : 'white',
+                            cursor: zoomLevel >= MAX_ZOOM ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '18px'
+                        }}
+                    >
+                        🔍+
+                    </button>
+
+                    <button
+                        title="Zoom Out (-)"
+                        onClick={handleZoomOut}
+                        disabled={zoomLevel <= MIN_ZOOM}
+                        style={{
+                            width: '36px',
+                            height: '36px',
+                            borderRadius: '4px',
+                            border: '1px solid transparent',
+                            backgroundColor: 'transparent',
+                            color: zoomLevel <= MIN_ZOOM ? '#555' : 'white',
+                            cursor: zoomLevel <= MIN_ZOOM ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '18px'
+                        }}
+                    >
+                        🔍-
+                    </button>
+
+                    <button
+                        title="Reset Zoom (0)"
+                        onClick={handleZoomReset}
+                        disabled={zoomLevel === 1}
+                        style={{
+                            width: '36px',
+                            height: '36px',
+                            borderRadius: '4px',
+                            border: '1px solid transparent',
+                            backgroundColor: zoomLevel === 1 ? 'transparent' : '#3e3e42',
+                            color: zoomLevel === 1 ? '#555' : 'white',
+                            cursor: zoomLevel === 1 ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '12px',
+                            fontWeight: 'bold'
+                        }}
+                    >
+                        {Math.round(zoomLevel * 100)}%
+                    </button>
+
                     {tool === 'select' && selectedBoxIndex !== null && (
                         <button
                             title="Delete Selected (Del)"
@@ -986,38 +1081,46 @@ export const AnnotationEditor = ({ onBack }) => {
                 </div>
 
                 {/* Canvas Area */}
-                <div style={{ flex: 1, position: 'relative', overflow: 'auto', backgroundColor: '#1e1e1e', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                <div ref={imageContainerRef} style={{ flex: 1, position: 'relative', overflow: 'auto', backgroundColor: '#1e1e1e', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
                     {imageData ? (
-                        <div style={{ position: 'relative', boxShadow: '0 0 20px rgba(0,0,0,0.5)' }}>
-                            <img
-                                ref={imageRef}
-                                src={imageData}
-                                alt="Annotation target"
-                                onLoad={() => {
-                                    console.log('🖼️ [img.onLoad] Image loaded');
-                                    drawCanvas();
-                                }}
-                                style={{ display: 'block', maxWidth: 'none' }}
-                                draggable={false}
-                            />
-                            <canvas
-                                ref={canvasRef}
-                                onMouseDown={handleMouseDown}
-                                onMouseMove={handleMouseMove}
-                                onMouseUp={handleMouseUp}
-                                onMouseLeave={handleMouseLeave}
-                                style={{
-                                    position: 'absolute',
-                                    top: 0,
-                                    left: 0,
-                                    cursor: tool === 'draw' ? 'crosshair' : 'default'
-                                }}
-                            />
-                            {/* Render Floating Menu */}
+                        <>
+                            <div style={{ 
+                                position: 'relative', 
+                                boxShadow: '0 0 20px rgba(0,0,0,0.5)',
+                                transform: `scale(${zoomLevel})`,
+                                transformOrigin: 'center center',
+                                transition: 'transform 0.1s ease-out'
+                            }}>
+                                <img
+                                    ref={imageRef}
+                                    src={imageData}
+                                    alt="Annotation target"
+                                    onLoad={() => {
+                                        console.log('🖼️ [img.onLoad] Image loaded');
+                                        drawCanvas();
+                                    }}
+                                    style={{ display: 'block', maxWidth: 'none' }}
+                                    draggable={false}
+                                />
+                                <canvas
+                                    ref={canvasRef}
+                                    onMouseDown={handleMouseDown}
+                                    onMouseMove={handleMouseMove}
+                                    onMouseUp={handleMouseUp}
+                                    onMouseLeave={handleMouseLeave}
+                                    style={{
+                                        position: 'absolute',
+                                        top: 0,
+                                        left: 0,
+                                        cursor: tool === 'draw' ? 'crosshair' : 'default'
+                                    }}
+                                />
+                            </div>
+                            {/* Render Floating Menu - Outside the scaled div */}
                             {selectedBoxIndex !== null && !isDragging && !resizingBoxIndex && (
                                 <AnnotationMenu box={boxes[selectedBoxIndex]} index={selectedBoxIndex} />
                             )}
-                        </div>
+                        </>
                     ) : (
                         <div style={{ color: '#ccc' }}>
                             {imageInfo.length === 0 ? 'No images to annotate' : 'Loading image...'}
